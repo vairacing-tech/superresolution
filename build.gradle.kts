@@ -112,6 +112,9 @@ allprojects {
         afterEvaluate {
             dependencies {
                 annotationProcessor("systems.manifold:manifold-preprocessor:${rootProject.property("manifold_version")}")
+                if (configurations.findByName("testAnnotationProcessor") != null) {
+                    add("testAnnotationProcessor", "systems.manifold:manifold-preprocessor:${rootProject.property("manifold_version")}")
+                }
             }
         }
     }

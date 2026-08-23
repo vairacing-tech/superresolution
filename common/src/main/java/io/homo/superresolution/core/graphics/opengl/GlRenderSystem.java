@@ -31,6 +31,7 @@ public class GlRenderSystem implements IRenderSystem {
     public void initRenderSystem() {
         this.device = new GlDevice();
         supportsARBClearTexture = GL.getCapabilities().GL_ARB_clear_texture || GL.getCapabilities().OpenGL44;
+        io.homo.superresolution.core.graphics.GraphicsCapabilities.logContextInfo();
     }
 
     @Override

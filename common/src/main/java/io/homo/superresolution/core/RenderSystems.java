@@ -113,7 +113,7 @@ public class RenderSystems {
     }
 
     private static void initVulkan() {
-        if (SuperResolutionConfig.isSkipInitVulkan()) {
+        if (Platform.isJavaOnlyMode() || SuperResolutionConfig.isSkipInitVulkan()) {
             return;
         }
 

@@ -62,4 +62,7 @@ public abstract class Platform {
 
     public abstract boolean isFabric();
 
+    public static boolean isJavaOnlyMode() {
+        return OperatingSystemType.get() == OperatingSystemType.ANDROID || Boolean.getBoolean("superresolution.java_only");
+    }
 }

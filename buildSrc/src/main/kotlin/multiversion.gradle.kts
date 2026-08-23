@@ -11,30 +11,7 @@ plugins {
 }
 
 fun fetchAllReleaseVersions(): List<String> {
-    return try {
-        val connection = URL("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json").openConnection().apply {
-            connectTimeout = 500
-            readTimeout = 500
-        }
-
-        @Suppress("UNCHECKED_CAST")
-        val manifest = JsonSlurper().parse(connection.getInputStream()) as Map<String, Any?>
-
-        println("Successfully retrieved Minecraft version information")
-
-        val versions = (manifest["versions"] as? List<*>)
-            .orEmpty()
-            .mapNotNull { it as? Map<*, *> }
-            .filter { it["type"] == "release" }
-            .mapNotNull { it["id"]?.toString() }
-
-        println("Latest Minecraft version: ${versions.firstOrNull().orEmpty()}")
-        versions
-    } catch (e: Exception) {
-        e.printStackTrace()
-        println("Failed to retrieve Minecraft version information; using the default version list")
-        getDefaultReleaseVersions()
-    }
+    return getDefaultReleaseVersions()
 }
 
 fun getDefaultReleaseVersions(): List<String> {

@@ -464,12 +464,20 @@ public class SuperResolutionConfig {
             return true;
         }
 
+        SuperResolution.LOGGER.info("[SGSR1-LIFECYCLE] requested {} -> {}", currentAlgo != null ? currentAlgo.displayName : algoName, newAlgo.displayName);
+        SuperResolution.LOGGER.info("[SGSR1-LIFECYCLE] pending transition");
+
         AbstractAlgorithm oldAlgorithmInstance = SuperResolution.currentAlgorithm;
         AlgorithmDescription<?> oldDescription = SuperResolution.algorithmDescription;
 
         try {
             UPSCALE_ALGO.set(newAlgo.codeName);
             SuperResolution.algorithmDescription = newAlgo;
+
+            if (newAlgo.equals(AlgorithmDescriptions.NONE) && RenderHandlerManager.getOriginRenderTarget() != null) {
+                RenderHandlerManager.setClientRenderTarget(RenderHandlerManager.getOriginRenderTarget().asMcRenderTarget());
+                SuperResolution.LOGGER.info("[SGSR1-LIFECYCLE] native target restored");
+            }
 
             if (!SuperResolution.createAlgorithm()) {
                 throw new RuntimeException("Failed to create algorithm");
@@ -478,12 +486,14 @@ public class SuperResolutionConfig {
             if (oldAlgorithmInstance != null) {
                 try {
                     oldAlgorithmInstance.destroy();
-                    return true;
+                    SuperResolution.LOGGER.info("[SGSR1-LIFECYCLE] old SGSR resources destroyed");
                 } catch (Exception e) {
                     SuperResolution.LOGGER.error("Error while destroying the old algorithm", e);
                 }
             }
 
+            SuperResolution.LOGGER.info("[SGSR1-LIFECYCLE] transition complete");
+            return true;
         } catch (Exception e) {
             SuperResolution.LOGGER.error("Failed to switch to algorithm {}; attempting rollback", newAlgo.displayName, e);
 
@@ -506,6 +516,11 @@ public class SuperResolutionConfig {
 
     private static void fallbackToNone() {
         SuperResolution.LOGGER.error("All rollback attempts failed; using the NONE algorithm");
+        SuperResolution.LOGGER.info("[SGSR1-LIFECYCLE] fallback to NONE");
+        if (RenderHandlerManager.getOriginRenderTarget() != null) {
+            RenderHandlerManager.setClientRenderTarget(RenderHandlerManager.getOriginRenderTarget().asMcRenderTarget());
+            SuperResolution.LOGGER.info("[SGSR1-LIFECYCLE] native target restored");
+        }
         UPSCALE_ALGO.set(AlgorithmDescriptions.NONE.codeName);
         SuperResolution.algorithmDescription = AlgorithmDescriptions.NONE;
         SuperResolution.createAlgorithm();
@@ -516,23 +531,29 @@ public class SuperResolutionConfig {
     }
 
     public static boolean isEnableUpscale() {
-        if (!SRWorkModeManager.hasAvailableWorkMode()) {
+        if (!SRWorkModeManager.hasAvailableWorkMode() && !Platform.isJavaOnlyMode()) {
             return false;
         }
         return isEnableUpscaleOriginal();
     }
 
     public static boolean setEnableUpscale(boolean value) {
-        if (value && !SRWorkModeManager.hasAvailableWorkMode()) {
+        if (value && !SRWorkModeManager.hasAvailableWorkMode() && !Platform.isJavaOnlyMode()) {
             return false;
         }
         boolean previousValue = isEnableUpscale();
         ENABLE_UPSCALE.set(value);
         if (previousValue != isEnableUpscale()) {
+            SuperResolution.LOGGER.info("[SGSR1-LIFECYCLE] requested upscale enable: {} -> {}", previousValue, isEnableUpscale());
+            if (!isEnableUpscale() && RenderHandlerManager.getOriginRenderTarget() != null) {
+                RenderHandlerManager.setClientRenderTarget(RenderHandlerManager.getOriginRenderTarget().asMcRenderTarget());
+                SuperResolution.LOGGER.info("[SGSR1-LIFECYCLE] native target restored");
+            }
             resolutionChangeCallback.run();
             if (SRWorkModeManager.isCurrentMode(SRWorkModeManager.SHADER_COMPAT)) {
                 SRWorkModeManager.reloadShaderPack();
             }
+            SuperResolution.LOGGER.info("[SGSR1-LIFECYCLE] transition complete");
         }
         return true;
     }
@@ -703,7 +724,7 @@ public class SuperResolutionConfig {
         if (INTERNAL_TEXTURE_FORMAT.get() == InternalTextureFormat.AUTO) {
             SRWorkModeState state = SRWorkModeManager.getCurrentState();
             TextureFormat format = state.internalTextureFormat();
-            return format == null ? TextureFormat.RGBA16F : format;
+            return format == null ? TextureFormat.RGBA8 : format;
         }
         return INTERNAL_TEXTURE_FORMAT.get().format();
     }

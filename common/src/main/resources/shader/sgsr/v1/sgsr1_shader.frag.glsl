@@ -103,11 +103,8 @@ vec2 edgeDirection(vec4 left, vec4 right)
 
 void main()
 {
-    vec4 color;
-    if (OperationMode == 1)
-        color.xyz = textureLod(ps0, in_TEXCOORD0.xy, 0.0).xyz;
-    else
-        color.xyzw = textureLod(ps0, in_TEXCOORD0.xy, 0.0).xyzw;
+    vec4 srcSample = textureLod(ps0, in_TEXCOORD0.xy, 0.0);
+    vec4 color = srcSample;
 
     highp float xCenter;
     xCenter = abs(in_TEXCOORD0.x + -0.5);
@@ -176,6 +173,6 @@ void main()
         }
     }
 
-    color.w = 1.0; //assume alpha channel is not used
+    color.w = srcSample.w; // Preserve Minecraft source alpha channel
     out_Target0.xyzw = color;
 }

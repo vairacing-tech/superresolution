@@ -14,6 +14,9 @@ public class HackSRWorkModeProvider implements SRWorkModeProvider {
 
     @Override
     public boolean isActive() {
+        if (io.homo.superresolution.api.platform.Platform.isJavaOnlyMode()) {
+            return true;
+        }
         return IrisCompatHelper.isCandidateEligible();
     }
 

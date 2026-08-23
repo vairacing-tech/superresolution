@@ -76,6 +76,9 @@ public class MixinPlugin implements IMixinConfigPlugin {
                     Platform.currentPlatform.isModLoaded("gpu_booster")
             );
         }
+        if (name.startsWith("Iris") || name.contains("Iris")) {
+            return Platform.currentPlatform.isModLoaded("iris") || Platform.currentPlatform.isModLoaded("oculus");
+        }
         return true;
     }
 

@@ -32,6 +32,9 @@ public class MaterialUI {
     }
 
     public static void init() {
+        if (io.homo.superresolution.api.platform.Platform.isJavaOnlyMode()) {
+            return;
+        }
         NanoVGBackend.init();
         MaterialSymbols.init();
         EVENT_BUS.start();

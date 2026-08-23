@@ -32,7 +32,7 @@ public class HandRenderTarget {
             handRenderTarget = (IBindableFrameBuffer) RenderSystems.current().device().createFramebuffer(
                     FramebufferDescription.create()
                             .colorFormat(TextureFormat.RGBA8)
-                            .depthFormat(TextureFormat.DEPTH24)
+                            .depthFormat(MinecraftRenderTargetUtil.getPreferredDepthFormat())
                             .size(RenderHandlerManager.getScreenWidth(), RenderHandlerManager.getScreenHeight())
                             .build()
             );

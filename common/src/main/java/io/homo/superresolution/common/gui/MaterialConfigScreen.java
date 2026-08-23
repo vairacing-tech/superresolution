@@ -55,6 +55,7 @@ import io.homo.superresolution.common.perf.PerformanceTracker;
 import io.homo.superresolution.common.upscale.AlgorithmDescriptions;
 import io.homo.superresolution.common.upscale.interoplayer.GlVulkanInteropAlgorithm;
 import io.homo.superresolution.common.workmode.SRWorkModeManager;
+import io.homo.superresolution.core.NativeLibManager;
 import io.homo.superresolution.core.RenderSystems;
 import io.homo.superresolution.core.SuperResolutionConstants;
 import io.homo.superresolution.core.SuperResolutionNative;
@@ -2458,6 +2459,9 @@ public class MaterialConfigScreen extends NanoVGScreen<MaterialConfigScreen> {
 
     private String safeGetNativeVersion() {
         try {
+            if (!NativeLibManager.nativeApiAvailable()) {
+                return Platform.isJavaOnlyMode() ? "Java/OpenGL (Android ARM64)" : Text.translatable("superresolution.screen.config.info.unavailable").getString();
+            }
             return SuperResolutionNative.getVersionInfo();
         } catch (Throwable ignored) {
             return Text.translatable("superresolution.screen.config.info.unavailable").getString();

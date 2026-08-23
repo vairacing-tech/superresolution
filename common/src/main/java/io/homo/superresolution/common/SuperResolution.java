@@ -24,7 +24,9 @@ import io.homo.superresolution.api.InitializationDescription;
 import io.homo.superresolution.api.SuperResolutionAPI;
 import io.homo.superresolution.api.event.AlgorithmResizeEvent;
 import io.homo.superresolution.api.platform.EnvironmentType;
+import io.homo.superresolution.api.platform.OperatingSystemType;
 import io.homo.superresolution.api.platform.Platform;
+import io.homo.superresolution.api.platform.SystemArchitecture;
 import io.homo.superresolution.api.registry.AlgorithmDescription;
 import io.homo.superresolution.api.utils.Requirement;
 import io.homo.superresolution.common.config.SuperResolutionConfig;
@@ -226,9 +228,17 @@ public final class SuperResolution implements Destroyable {
         if (Platform.currentPlatform.getEnv() == EnvironmentType.SERVER) {
             throw new RuntimeException("SuperResolution does not support installation on a dedicated server!");
         }
-        NativeLibManager.extract(SuperResolutionConstants.NATIVE_LIBRARIES_DIR.getPath());
-        NativeLibManager.load(SuperResolutionConstants.NATIVE_LIBRARIES_DIR.getPath());
-        GlslangShaderCompiler.init();
+        if (Platform.isJavaOnlyMode()) {
+            LOGGER.info("[SuperResolution] Platform: {} {}", OperatingSystemType.get(), SystemArchitecture.get());
+            LOGGER.info("[SuperResolution] Java/OpenGL-only mode: ENABLED");
+            LOGGER.info("[SuperResolution] Native backend: SKIPPED");
+            LOGGER.info("[SuperResolution] Glslang/SPIR-V compiler: SKIPPED");
+            LOGGER.info("[SuperResolution] Internal Vulkan backend: SKIPPED");
+        } else {
+            NativeLibManager.extract(SuperResolutionConstants.NATIVE_LIBRARIES_DIR.getPath());
+            NativeLibManager.load(SuperResolutionConstants.NATIVE_LIBRARIES_DIR.getPath());
+            GlslangShaderCompiler.init();
+        }
         isPreInit = true;
     }
 
@@ -252,7 +262,9 @@ public final class SuperResolution implements Destroyable {
                                 GraphicsCapabilities.getGLVersion()[1]),
                         Component.translatable("superresolution.common_requirement.not_support.msg").getString()
                 );
-                System.exit(1);
+                if (!Platform.isJavaOnlyMode()) {
+                    System.exit(1);
+                }
             }
 
             if (!commonRequirement.check().glExtensionsPresent()) {
@@ -264,7 +276,9 @@ public final class SuperResolution implements Destroyable {
                                 .formatted(extensionStringBuilder.toString()),
                         Component.translatable("superresolution.common_requirement.not_support.msg").getString()
                 );
-                System.exit(1);
+                if (!Platform.isJavaOnlyMode()) {
+                    System.exit(1);
+                }
             }
         }
         INCOMPATIBLE_MODS.forEach((mod) -> {
@@ -522,9 +536,11 @@ public final class SuperResolution implements Destroyable {
         if (!B3DVulkanBridge.isB3DVulkanBackend()) {
             AlgorithmManager.destroy();
         }
-        SuperResolutionNativeAPI.srShutdown();
-        Streamline.shutdown();
-        NgxInitializer.shutdown();
+        if (NativeLibManager.nativeApiAvailable()) {
+            SuperResolutionNativeAPI.srShutdown();
+            Streamline.shutdown();
+            NgxInitializer.shutdown();
+        }
         // In Vulkan-presentation (interop) mode the hidden OpenGL context and the Vulkan
         // device are torn down later, in destroyGraphicsBackend() at Minecraft.destroy()
         // TAIL, so Minecraft's own shutdown rendering (the disconnect progress screen and

@@ -20,7 +20,7 @@ public record SRWorkModeState(
     public static SRWorkModeState defaults() {
         return new SRWorkModeState(
                 InitializationDescription.defaults(),
-                TextureFormat.RGBA16F,
+                TextureFormat.RGBA8,
                 null,
                 IrisCompatHelper.hasActiveShaderpack(),
                 false,

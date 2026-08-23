@@ -47,9 +47,7 @@ public class GpuTextureAdapter extends GlTexture {
                         com.mojang.blaze3d.textures.TextureFormat.DEPTH32 :
                         com.mojang.blaze3d.textures.TextureFormat.RGBA8,
                 #else
-                texture.getTextureFormat().isDepth() ?
-                        com.mojang.blaze3d.GpuFormat.D32_FLOAT :
-                        com.mojang.blaze3d.GpuFormat.RGBA8_UNORM,
+                toMojangGpuFormat(texture.getTextureFormat()),
                 #endif
                 texture.getWidth(),
                 texture.getHeight(),
@@ -81,6 +79,21 @@ public class GpuTextureAdapter extends GlTexture {
     public int getHeight(int mipLevel) {
         return texture.getHeight();
     }
+
+    #if MC_VER >= MC_26_2
+    public static com.mojang.blaze3d.GpuFormat toMojangGpuFormat(TextureFormat format) {
+        if (format == null) return com.mojang.blaze3d.GpuFormat.RGBA8_UNORM;
+        return switch (format) {
+            case DEPTH32F -> com.mojang.blaze3d.GpuFormat.D32_FLOAT;
+            case DEPTH32F_STENCIL8 -> com.mojang.blaze3d.GpuFormat.D32_FLOAT_S8_UINT;
+            case DEPTH24_STENCIL8 -> com.mojang.blaze3d.GpuFormat.D24_UNORM_S8_UINT;
+            case DEPTH24, DEPTH32, DEPTH_COMPONENT -> com.mojang.blaze3d.GpuFormat.D32_FLOAT;
+            case RGBA16F -> com.mojang.blaze3d.GpuFormat.RGBA16_FLOAT;
+            case RGBA32F -> com.mojang.blaze3d.GpuFormat.RGBA32_FLOAT;
+            default -> com.mojang.blaze3d.GpuFormat.RGBA8_UNORM;
+        };
+    }
+    #endif
 
     public static GlTexture ofTexture(ITexture texture) {
         return new GpuTextureAdapter(texture);

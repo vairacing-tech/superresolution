@@ -18,7 +18,9 @@
 
 package io.homo.superresolution.core.graphics.opengl.shader;
 
+import io.homo.superresolution.api.platform.Platform;
 import io.homo.superresolution.common.config.SuperResolutionConfig;
+import io.homo.superresolution.core.NativeLibManager;
 import io.homo.superresolution.core.SuperResolutionConstants;
 import io.homo.superresolution.core.graphics.glslang.GlslangCompileShaderResult;
 import io.homo.superresolution.core.graphics.glslang.GlslangShaderCompiler;
@@ -201,6 +203,45 @@ public class GlShaderProgram implements IShaderProgram, IDebuggableObject {
         }
     }
 
+    protected GlShader compileSingleShaderDirectGLSL(ShaderSource source) {
+        int glShaderType = switch (source.getType()) {
+            case Vertex -> GL_VERTEX_SHADER;
+            case Compute -> GL_COMPUTE_SHADER;
+            case Fragment -> GL_FRAGMENT_SHADER;
+        };
+        Objects.requireNonNull(source, "ShaderSource cannot be null");
+        GlShader shader = new GlShader(source.getType());
+        if (shader.id() == 0) {
+            throw new RuntimeException("Failed to create shader object (Type: " + glShaderType + ")");
+        }
+        try {
+            String rawCode = source.getSource();
+            String sourceCode = preprocessShaderCode(rawCode);
+            LOGGER.info("Direct GLSL compiling shader {} [{}]", description.shaderName(), source.getType());
+            glShaderSource(shader.id(), sourceCode);
+            glCompileShader(shader.id());
+
+            if (glGetShaderi(shader.id(), GL_COMPILE_STATUS) == GL_FALSE) {
+                String infoLog = glGetShaderInfoLog(shader.id());
+                String errorDetails = String.format(
+                        "Direct GLSL compilation failed for shader '%s' (%s)\nError log:\n%s",
+                        description.shaderName(),
+                        source.getType().name(),
+                        infoLog
+                );
+                LOGGER.error(errorDetails);
+                saveErrorArtifacts(source.getType(), sourceCode, infoLog);
+                throw new ShaderCompileException(errorDetails);
+            }
+
+            objectLabel(GL_SHADER, shader.id(), "Shader_" + source.getType());
+            return shader;
+        } catch (Exception e) {
+            shader.destroy();
+            throw e;
+        }
+    }
+
     private void saveErrorArtifacts(ShaderType type, String sourceCode, String log) {
         String time = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
         String baseName = String.format("errorArtifact_%s_%s.%s", description.shaderName(), type.name(), time);
@@ -292,7 +333,8 @@ public class GlShaderProgram implements IShaderProgram, IDebuggableObject {
     public void compile(boolean compat) {
         EnumMap<ShaderType, ShaderSource> shaderSources = description.sourceMap();
         validateShaderTypes();
-        if (!(SuperResolutionConfig.isEnableCompatShaderCompiler() || compat)) {
+        boolean isDirectGLSL = Platform.isJavaOnlyMode() || !NativeLibManager.nativeApiAvailable();
+        if (!isDirectGLSL && !(SuperResolutionConfig.isEnableCompatShaderCompiler() || compat)) {
             if (!ShaderCompiler.checkOpenGLProgramBinary(this)) {
                 ShaderCompiler.saveOpenGLProgramBinary(this);
             }
@@ -300,10 +342,12 @@ public class GlShaderProgram implements IShaderProgram, IDebuggableObject {
         List<GlShader> shaders = new ArrayList<>();
         try {
             shaderSources.forEach((type, source) -> {
-                GlShader shader = compileSingleShader(
-                        source,
-                        SuperResolutionConfig.isEnableCompatShaderCompiler() || compat
-                );
+                GlShader shader = isDirectGLSL
+                        ? compileSingleShaderDirectGLSL(source)
+                        : compileSingleShader(
+                                source,
+                                SuperResolutionConfig.isEnableCompatShaderCompiler() || compat
+                        );
                 shaders.add(shader);
             });
             if (this.handle != 0) {
@@ -314,6 +358,17 @@ public class GlShaderProgram implements IShaderProgram, IDebuggableObject {
             shaders.forEach(s -> glAttachShader(handle, s.id()));
             glLinkProgram(handle);
             glFlush();
+            int linkStatus = glGetProgrami(handle, GL_LINK_STATUS);
+            if (description.shaderName().toUpperCase().contains("SGSR")) {
+                LOGGER.info("[SGSR1-TRACE] Vertex compile: OK");
+                LOGGER.info("[SGSR1-TRACE] Fragment compile: OK");
+                if (linkStatus == GL_TRUE) {
+                    LOGGER.info("[SGSR1-TRACE] Program link: OK");
+                } else {
+                    String infoLog = glGetProgramInfoLog(handle);
+                    LOGGER.error("[SGSR1-TRACE] Program link: FAILED\nLink log:\n{}", infoLog);
+                }
+            }
             checkProgram();
 
             updateDebugLabel(getDebugLabel());

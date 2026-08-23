@@ -7,7 +7,7 @@ public final class HackWorkModeBootstrap {
     }
 
     public static void register() {
-        if (SuperResolutionConfig.isUnstableIncompatibleShaderSupportEnabledAtStartup()) {
+        if (SuperResolutionConfig.isUnstableIncompatibleShaderSupportEnabledAtStartup() || io.homo.superresolution.api.platform.Platform.isJavaOnlyMode()) {
             SRWorkModeManager.register(new HackSRWorkModeProvider());
         }
     }

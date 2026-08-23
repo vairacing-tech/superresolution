@@ -35,7 +35,12 @@ public enum OperatingSystemType {
     }
 
     public static OperatingSystemType get() {
-        if (ANDROID.isCurrentOS || System.getenv("POJAV_RENDERER") != null) {
+        if (ANDROID.isCurrentOS
+                || System.getenv("POJAV_RENDERER") != null
+                || System.getenv("AMETHYST_RENDERER") != null
+                || System.getenv("POJAV_NATIVEDIR") != null
+                || System.getProperty("os.name", "").toLowerCase().contains("android")
+                || new java.io.File("/system/bin/app_process").exists()) {
             return ANDROID;
         } else if (LINUX.isCurrentOS) {
             return LINUX;

@@ -28,9 +28,16 @@ public final class IrisCompatHelper {
     private static final String IRIS_CLASS = "net.irisshaders.iris.Iris";
     private static final String CURRENT_SHADERPACK_FIELD = "currentPack";
     private static volatile boolean initialized;
+    private static volatile boolean irisInstalled;
     private static volatile Field currentShaderpack;
+    private static volatile java.lang.reflect.Method getCurrentPackNameMethod;
 
     private IrisCompatHelper() {
+    }
+
+    public static boolean isIrisInstalled() {
+        initReflection();
+        return irisInstalled;
     }
 
     public static boolean isCandidateEligible() {
@@ -55,6 +62,30 @@ public final class IrisCompatHelper {
         }
     }
 
+    public static String getActiveShaderpackName() {
+        initReflection();
+        if (getCurrentPackNameMethod != null) {
+            try {
+                Object res = getCurrentPackNameMethod.invoke(null);
+                if (res instanceof Optional<?> opt && opt.isPresent()) {
+                    return opt.get().toString();
+                } else if (res instanceof String s) {
+                    return s;
+                }
+            } catch (Throwable ignored) {}
+        }
+        if (currentShaderpack != null) {
+            try {
+                Object value = currentShaderpack.get(null);
+                if (value instanceof Optional<?> optional && optional.isPresent()) {
+                    Object pack = optional.get();
+                    return pack.toString();
+                }
+            } catch (Throwable ignored) {}
+        }
+        return null;
+    }
+
     private static void initReflection() {
         if (initialized) {
             return;
@@ -65,11 +96,25 @@ public final class IrisCompatHelper {
             }
             try {
                 Class<?> irisClass = Class.forName(IRIS_CLASS);
-                Field field = irisClass.getDeclaredField(CURRENT_SHADERPACK_FIELD);
-                field.setAccessible(true);
-                currentShaderpack = field;
+                irisInstalled = true;
+                try {
+                    Field field = irisClass.getDeclaredField(CURRENT_SHADERPACK_FIELD);
+                    field.setAccessible(true);
+                    currentShaderpack = field;
+                } catch (Throwable ignored) {
+                    currentShaderpack = null;
+                }
+                try {
+                    java.lang.reflect.Method method = irisClass.getDeclaredMethod("getCurrentPackName");
+                    method.setAccessible(true);
+                    getCurrentPackNameMethod = method;
+                } catch (Throwable ignored) {
+                    getCurrentPackNameMethod = null;
+                }
             } catch (Throwable ignored) {
+                irisInstalled = false;
                 currentShaderpack = null;
+                getCurrentPackNameMethod = null;
             }
             initialized = true;
         }

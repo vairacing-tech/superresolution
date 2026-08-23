@@ -73,11 +73,19 @@ public class FrameBufferRenderTargetAdapter extends RenderTarget {
     #if MC_VER >= MC_1_21_6
     @javax.annotation.Nullable
     public GpuTextureView getColorTextureView() {
+        updateState();
+        if (this.colorTextureView == null && this.colorTextureAdapter != null) {
+            this.colorTextureView = RenderSystem.getDevice().createTextureView(this.colorTextureAdapter);
+        }
         return this.colorTextureView;
     }
 
     @javax.annotation.Nullable
     public GpuTextureView getDepthTextureView() {
+        updateState();
+        if (this.depthTextureView == null && this.depthTextureAdapter != null) {
+            this.depthTextureView = RenderSystem.getDevice().createTextureView(this.depthTextureAdapter);
+        }
         return this.depthTextureView;
     }
 

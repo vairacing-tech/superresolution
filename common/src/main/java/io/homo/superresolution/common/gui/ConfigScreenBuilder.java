@@ -31,6 +31,9 @@ public class ConfigScreenBuilder {
 
     public Screen buildConfigScreen(Screen parentScreen) {
         SuperResolutionConfig.SPEC.load();
+        if (io.homo.superresolution.api.platform.Platform.isJavaOnlyMode()) {
+            return new AndroidConfigScreen(parentScreen);
+        }
         return new MaterialConfigScreen(parentScreen);
     }
 }

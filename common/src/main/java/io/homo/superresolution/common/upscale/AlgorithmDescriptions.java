@@ -54,6 +54,12 @@ public class AlgorithmDescriptions {
             .displayName("None")
             .requirement(Requirement.nothing())
             .build();
+    public static final AlgorithmDescription<io.homo.superresolution.common.upscale.algo.bilinear.Bilinear> BILINEAR = AlgorithmDescription.builder(io.homo.superresolution.common.upscale.algo.bilinear.Bilinear.class)
+            .briefName("Bilinear")
+            .codeName("bilinear")
+            .displayName("Bilinear (Debug Bypass)")
+            .requirement(Requirement.nothing())
+            .build();
     public static final AlgorithmDescription<FSR1> FSR1 = AlgorithmDescription.builder(FSR1.class)
             .briefName("AMD FSR 1")
             .codeName("fsr1")
@@ -282,7 +288,7 @@ public class AlgorithmDescriptions {
                             .requireVulkan(true)
             )
             .extraResources(
-                    Platform.currentPlatform.getOS().type == OperatingSystemType.WINDOWS
+                    OperatingSystemType.get() == OperatingSystemType.WINDOWS
                             ? ExtraResources.builder()
                             .add(ExtraResource.builder("nvngx_dlss.dll")
                                     .addRemote(
@@ -333,6 +339,15 @@ public class AlgorithmDescriptions {
 
     public static void registryAlgorithms() {
         AlgorithmRegistry.registry(NONE);
+        AlgorithmRegistry.registry(BILINEAR);
+        if (Platform.isJavaOnlyMode()) {
+            AlgorithmRegistry.registry(SGSR1);
+            if (Platform.currentPlatform != null && Platform.currentPlatform.isDevelopmentEnvironment()) {
+                AlgorithmRegistry.registry(ANIME4K);
+            }
+            SuperResolutionAPI.EVENT_BUS.post(new AlgorithmRegisterEvent());
+            return;
+        }
         AlgorithmRegistry.registry(FSR1);
         AlgorithmRegistry.registry(FSR2);
         AlgorithmRegistry.registry(FSR);
@@ -341,7 +356,7 @@ public class AlgorithmDescriptions {
         AlgorithmRegistry.registry(DLSS);
         AlgorithmRegistry.registry(SGSR1);
         AlgorithmRegistry.registry(SGSR2);
-        if (Platform.currentPlatform.isDevelopmentEnvironment()) {
+        if (Platform.currentPlatform != null && Platform.currentPlatform.isDevelopmentEnvironment()) {
             AlgorithmRegistry.registry(ANIME4K);
         }
         SuperResolutionAPI.EVENT_BUS.post(new AlgorithmRegisterEvent());

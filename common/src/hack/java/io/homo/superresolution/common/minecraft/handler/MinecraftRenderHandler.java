@@ -18,6 +18,7 @@
 
 package io.homo.superresolution.common.minecraft.handler;
 
+import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.systems.RenderSystem;
 import io.homo.superresolution.api.SuperResolutionAPI;
 import io.homo.superresolution.api.event.AlgorithmDispatchEvent;
@@ -70,13 +71,44 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
     private IBindableFrameBuffer renderTarget;
     private boolean initialized;
 
+    public static TextureFormat getPreferredDepthFormat() {
+        IBindableFrameBuffer origin = RenderHandlerManager.getOriginRenderTarget();
+        if (origin != null) {
+            TextureFormat originDepthFormat = origin.getDepthTextureFormat();
+            if (originDepthFormat != null && originDepthFormat.isDepth()) {
+                return originDepthFormat;
+            }
+        }
+        try {
+            if (Minecraft.getInstance().gameRenderer != null && Minecraft.getInstance().gameRenderer.mainRenderTarget() != null) {
+                RenderTarget mcTarget = Minecraft.getInstance().gameRenderer.mainRenderTarget();
+                if (mcTarget.getDepthTexture() != null) {
+                    #if MC_VER > MC_1_21_4
+                    com.mojang.blaze3d.GpuFormat gpuFormat = mcTarget.getDepthTexture().getFormat();
+                    if (gpuFormat != null) {
+                        return switch (gpuFormat) {
+                            case D32_FLOAT -> TextureFormat.DEPTH32F;
+                            case D32_FLOAT_S8_UINT -> TextureFormat.DEPTH32F_STENCIL8;
+                            case D24_UNORM_S8_UINT -> TextureFormat.DEPTH24_STENCIL8;
+                            case D16_UNORM -> TextureFormat.DEPTH24;
+                            default -> TextureFormat.DEPTH32F;
+                        };
+                    }
+                    #endif
+                }
+            }
+        } catch (Throwable ignored) {}
+        return TextureFormat.DEPTH32F;
+    }
+
     public void initialize() {
         RenderSystem.assertOnRenderThread();
+        TextureFormat selectedDepthFormat = getPreferredDepthFormat();
         #if MC_VER > MC_1_21_4
         renderTarget = (IBindableFrameBuffer) RenderSystems.current().device().createFramebuffer(
                 FramebufferDescription.create()
                         .colorFormat(SuperResolutionConfig.getInternalTextureFormat())
-                        .depthFormat(TextureFormat.DEPTH32)
+                        .depthFormat(selectedDepthFormat)
                         .size(RenderHandlerManager.getRenderWidth(), RenderHandlerManager.getRenderHeight())
                         .build()
         );
@@ -84,7 +116,7 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
         renderTarget = new LegacyStorageFrameBuffer(true);
         #endif
         renderTarget.label("SRMainRenderTarget");
-        renderTarget.setClearColorRGBA(1.0f, 1.0f, 1.0f, 1.0f);
+        renderTarget.setClearColorRGBA(0.0f, 0.0f, 0.0f, 0.0f);
         resizeRenderTarget(renderTarget,
                 RenderHandlerManager.getRenderWidth(),
                 RenderHandlerManager.getRenderHeight()
@@ -133,6 +165,7 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
                         .build()
         );
         initialized = true;
+        io.homo.superresolution.common.metrics.UpscaleGpuMetrics.getInstance().resetForTransition("targets initialized/recreated");
     }
 
     public void onProcessPostChain(PostChain postChain) {
@@ -240,6 +273,7 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
         if (!checkRenderWorldCallPos(type)) {
             return;
         }
+        io.homo.superresolution.common.temporal.TemporalHistoryManager.getInstance().onFrameRendered();
         PerformanceTracker.push("Upscale");
         if (SuperResolutionConfig.isEnableUpscale()) {
             RenderHandlerManager.setClientRenderTarget(RenderHandlerManager.getOriginRenderTarget().asMcRenderTarget());
@@ -250,7 +284,8 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
         try (GlState ignored = new GlState()) {
             AlgorithmManager.update();
             if (SuperResolutionConfig.isEnableUpscale()) {
-                {
+                io.homo.superresolution.common.metrics.UpscaleGpuMetrics.getInstance().beginUpscale();
+                try {
                     {
                         GlDebug.pushGroup(0x7190001, "Copy Resources");
                         //ScaledRenderTarget.ColorTex copy to MinecraftRenderHandler.colorTexture
@@ -261,6 +296,7 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
                                         .fromTo(CopyOperation.TextureChannel.R, CopyOperation.TextureChannel.R)
                                         .fromTo(CopyOperation.TextureChannel.G, CopyOperation.TextureChannel.G)
                                         .fromTo(CopyOperation.TextureChannel.B, CopyOperation.TextureChannel.B)
+                                        .fromTo(CopyOperation.TextureChannel.A, CopyOperation.TextureChannel.A)
                         );
                         GlTextureCopier.copy(
                                 CopyOperation.create()
@@ -308,26 +344,32 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
                         );
                     }
 
-                }
-                //TODO:允许指定Filter
-                {
-                    GlDebug.pushGroup(0x7190004, "Blit To Screen");
-                    IFrameBuffer outFbo = SuperResolution.getCurrentAlgorithm().getOutputFrameBuffer();
-                    Gl.DSA.blitFramebuffer(
-                            (int) outFbo.handle(),
-                            (int) RenderHandlerManager.getOriginRenderTarget().handle(),
-                            0, 0, outFbo.getWidth(), outFbo.getHeight(),
-                            0, 0, RenderHandlerManager.getScreenWidth(), RenderHandlerManager.getScreenHeight(),
-                            GL46.GL_COLOR_BUFFER_BIT,
-                            GL46.GL_NEAREST
-                    );
-                    GlDebug.popGroup();
-                }
+                    //TODO:允许指定Filter
+                    {
+                        GlDebug.pushGroup(0x7190004, "Blit To Screen");
+                        IFrameBuffer outFbo = SuperResolution.getCurrentAlgorithm().getOutputFrameBuffer();
+                        int filter = (outFbo.getWidth() != RenderHandlerManager.getScreenWidth() || outFbo.getHeight() != RenderHandlerManager.getScreenHeight())
+                                ? GL46.GL_LINEAR
+                                : GL46.GL_NEAREST;
+                        org.lwjgl.opengl.GL11.glDisable(org.lwjgl.opengl.GL11.GL_SCISSOR_TEST);
+                        Gl.DSA.blitFramebuffer(
+                                (int) outFbo.handle(),
+                                (int) RenderHandlerManager.getOriginRenderTarget().handle(),
+                                0, 0, outFbo.getWidth(), outFbo.getHeight(),
+                                0, 0, RenderHandlerManager.getScreenWidth(), RenderHandlerManager.getScreenHeight(),
+                                GL46.GL_COLOR_BUFFER_BIT,
+                                filter
+                        );
+                        GlDebug.popGroup();
+                    }
 
-                if (SuperResolutionConfig.getCaptureMode() == CaptureMode.C && !Platform.currentPlatform.iris().isShaderPackInUse()) {
-                    GlDebug.pushGroup(0x7190005, "Blit Hand Render Target");
-                    blitHandRenderTarget();
-                    GlDebug.popGroup();
+                    if (SuperResolutionConfig.getCaptureMode() == CaptureMode.C && !Platform.currentPlatform.iris().isShaderPackInUse()) {
+                        GlDebug.pushGroup(0x7190005, "Blit Hand Render Target");
+                        blitHandRenderTarget();
+                        GlDebug.popGroup();
+                    }
+                } finally {
+                    io.homo.superresolution.common.metrics.UpscaleGpuMetrics.getInstance().endUpscale();
                 }
             }
         }
@@ -399,6 +441,9 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
         }
         int renderWidth = RenderHandlerManager.getRenderWidth();
         int renderHeight = RenderHandlerManager.getRenderHeight();
+        io.homo.superresolution.common.temporal.TemporalHistoryManager.getInstance().checkResolutionChange(
+                renderWidth, renderHeight, "MinecraftRenderHandler.updateRenderTargetSize"
+        );
         int screenWidth = RenderHandlerManager.getScreenWidth();
         int screenHeight = RenderHandlerManager.getScreenHeight();
         callOnRenderTargets(
@@ -492,6 +537,7 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
         emptyMotionVectorTexture.destroy();
         renderTarget.destroy();
         renderTargets.clear();
+        io.homo.superresolution.common.metrics.UpscaleGpuMetrics.getInstance().destroyGl();
         initialized = false;
     }
 

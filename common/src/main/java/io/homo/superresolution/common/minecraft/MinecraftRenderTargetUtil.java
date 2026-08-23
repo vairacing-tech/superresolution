@@ -116,6 +116,36 @@ public class MinecraftRenderTargetUtil {
     public static int getDepthTexId(RenderTarget renderTarget) {
         return ((GlTexture) Objects.requireNonNull(renderTarget.getDepthTexture())).glId();
     }
+
+    public static io.homo.superresolution.core.graphics.impl.texture.TextureFormat getPreferredDepthFormat() {
+        io.homo.superresolution.core.graphics.impl.framebuffer.IBindableFrameBuffer origin = io.homo.superresolution.common.minecraft.handler.RenderHandlerManager.getOriginRenderTarget();
+        if (origin != null) {
+            io.homo.superresolution.core.graphics.impl.texture.TextureFormat originDepthFormat = origin.getDepthTextureFormat();
+            if (originDepthFormat != null && originDepthFormat.isDepth()) {
+                return originDepthFormat;
+            }
+        }
+        try {
+            if (net.minecraft.client.Minecraft.getInstance().gameRenderer != null && net.minecraft.client.Minecraft.getInstance().gameRenderer.mainRenderTarget() != null) {
+                RenderTarget mcTarget = net.minecraft.client.Minecraft.getInstance().gameRenderer.mainRenderTarget();
+                if (mcTarget.getDepthTexture() != null) {
+                    #if MC_VER > MC_1_21_4
+                    com.mojang.blaze3d.GpuFormat gpuFormat = mcTarget.getDepthTexture().getFormat();
+                    if (gpuFormat != null) {
+                        return switch (gpuFormat) {
+                            case D32_FLOAT -> io.homo.superresolution.core.graphics.impl.texture.TextureFormat.DEPTH32F;
+                            case D32_FLOAT_S8_UINT -> io.homo.superresolution.core.graphics.impl.texture.TextureFormat.DEPTH32F_STENCIL8;
+                            case D24_UNORM_S8_UINT -> io.homo.superresolution.core.graphics.impl.texture.TextureFormat.DEPTH24_STENCIL8;
+                            case D16_UNORM -> io.homo.superresolution.core.graphics.impl.texture.TextureFormat.DEPTH24;
+                            default -> io.homo.superresolution.core.graphics.impl.texture.TextureFormat.DEPTH32F;
+                        };
+                    }
+                    #endif
+                }
+            }
+        } catch (Throwable ignored) {}
+        return io.homo.superresolution.core.graphics.impl.texture.TextureFormat.DEPTH32F;
+    }
 }
 #else
 public class MinecraftRenderTargetUtil {

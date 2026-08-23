@@ -32,6 +32,7 @@ import io.homo.superresolution.common.minecraft.MinecraftRenderTargetWrapper;
 import io.homo.superresolution.common.minecraft.MinecraftUtils;
 import io.homo.superresolution.common.minecraft.MinecraftWindow;
 import io.homo.superresolution.common.mixin.core.accessor.MinecraftAccessor;
+import io.homo.superresolution.common.mixin.gui.GameRendererAccessor;
 import io.homo.superresolution.common.presentation.vulkan.VulkanPresentationWindow;
 import io.homo.superresolution.common.upscale.AlgorithmDescriptions;
 import io.homo.superresolution.common.workmode.SRWorkModeManager;
@@ -72,6 +73,7 @@ public class RenderHandlerManager {
             return;
         }
         updateHandler();
+        io.homo.superresolution.common.temporal.TemporalHistoryManager.getInstance().invalidateHistory("RenderHandlerManager.resize()");
         if (handler != null) {
             handler.resize();
         }
@@ -100,6 +102,7 @@ public class RenderHandlerManager {
         handlerProviderId = null;
         shouldApplyScale = false;
         worldDebugGroupPushed = false;
+        io.homo.superresolution.common.temporal.TemporalHistoryManager.getInstance().invalidateHistory("RenderHandlerManager.updateHandler");
         if (provider == null) {
             return;
         }
@@ -224,7 +227,11 @@ public class RenderHandlerManager {
         if (renderTarget == null) {
             throw new RuntimeException();
         }
-        #if MC_VER < MC_26_2
+        #if MC_VER > MC_26_1_2
+        if (Minecraft.getInstance().gameRenderer != null) {
+            ((GameRendererAccessor) Minecraft.getInstance().gameRenderer).setMainRenderTarget(renderTarget);
+        }
+        #else
         ((MinecraftAccessor) Minecraft.getInstance()).setRenderTarget(renderTarget);
         #endif
     }

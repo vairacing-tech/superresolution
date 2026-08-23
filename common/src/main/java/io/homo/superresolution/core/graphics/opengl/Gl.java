@@ -18,21 +18,23 @@
 
 package io.homo.superresolution.core.graphics.opengl;
 
-import io.homo.superresolution.common.SuperResolution;
 import io.homo.superresolution.core.graphics.GraphicsCapabilities;
 import io.homo.superresolution.core.graphics.opengl.dsa.CompatDirectStateAccessImpl;
 import io.homo.superresolution.core.graphics.opengl.dsa.GL45OrEXTDirectStateAccessImpl;
 import io.homo.superresolution.core.graphics.opengl.dsa.IGlDirectStateAccess;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class Gl {
+    private static final Logger LOGGER = LoggerFactory.getLogger("SuperResolution/Gl");
     public static final IGlDirectStateAccess DSA;
 
     static {
         if (!isSupportDSA()) {
-            SuperResolution.LOGGER.info("DSA is unsupported; using CompatDirectStateAccessImpl");
+            LOGGER.info("DSA is unsupported; using CompatDirectStateAccessImpl");
             DSA = new CompatDirectStateAccessImpl();
         } else {
-            SuperResolution.LOGGER.info("DSA is supported; using GL45OrEXTDirectStateAccessImpl");
+            LOGGER.info("DSA is supported; using GL45OrEXTDirectStateAccessImpl");
             DSA = new GL45OrEXTDirectStateAccessImpl();
         }
     }

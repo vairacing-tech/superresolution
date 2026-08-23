@@ -18,6 +18,7 @@
 
 package io.homo.superresolution.core.graphics;
 
+import io.homo.superresolution.api.platform.Platform;
 import io.homo.superresolution.common.minecraft.B3DVulkanBridge;
 import io.homo.superresolution.core.RenderSystems;
 import io.homo.superresolution.core.impl.Pair;
@@ -43,8 +44,30 @@ public class GraphicsCapabilities {
     private static Set<String> glExtensions = null;
     private static GpuVendor gpuVendor = null;
     private static int[] glVersion = new int[]{-1, -1};
+    private static boolean contextLogged = false;
 
     public static void init() {
+    }
+
+    public static void logContextInfo() {
+        if (contextLogged) {
+            return;
+        }
+        try {
+            if (org.lwjgl.opengl.GL.getCapabilities() != null) {
+                String vendor = glGetString(GL_VENDOR);
+                String renderer = glGetString(GL_RENDERER);
+                String version = glGetString(GL_VERSION);
+                String glslVersion = glGetString(GL_SHADING_LANGUAGE_VERSION);
+                LOGGER.info("[SuperResolution] GL_VENDOR: {}", vendor);
+                LOGGER.info("[SuperResolution] GL_RENDERER: {}", renderer);
+                LOGGER.info("[SuperResolution] GL_VERSION: {}", version);
+                LOGGER.info("[SuperResolution] GL_SHADING_LANGUAGE_VERSION: {}", glslVersion);
+                contextLogged = true;
+            }
+        } catch (Throwable t) {
+            LOGGER.debug("Could not log OpenGL context info: {}", t.getMessage());
+        }
     }
 
     public static GpuVendor detectGpuVendor() {
@@ -83,15 +106,21 @@ public class GraphicsCapabilities {
         if (glVersion[0] != -1 && glVersion[1] != -1) {
             return glVersion;
         }
-        int major = glGetInteger(GL_MAJOR_VERSION);
-        int minor = glGetInteger(GL_MINOR_VERSION);
-        glVersion[0] = major;
-        glVersion[1] = minor;
-        return glVersion;
+        try {
+            if (org.lwjgl.opengl.GL.getCapabilities() != null) {
+                int major = glGetInteger(GL_MAJOR_VERSION);
+                int minor = glGetInteger(GL_MINOR_VERSION);
+                glVersion[0] = major;
+                glVersion[1] = minor;
+                return glVersion;
+            }
+        } catch (Throwable ignored) {
+        }
+        return new int[]{4, 1};
     }
 
     public static void detectSupportedVersions() {
-        if (isB3DVulkan()) {
+        if (isB3DVulkan() || Platform.isJavaOnlyMode()) {
             glVersions.clear();
             return;
         }
@@ -127,10 +156,18 @@ public class GraphicsCapabilities {
     }
 
     public static Pair<Integer, Integer> getHighestOpenGLVersion() {
-        return glVersions.stream()
+        Pair<Integer, Integer> max = glVersions.stream()
                 .max(Comparator.comparingInt((Pair<Integer, Integer> p) -> p.left())
                         .thenComparingInt(Pair::right))
                 .orElse(null);
+        if (max == null) {
+            int[] v = detectGLVersion();
+            if (v[0] > 0) {
+                return Pair.of(v[0], v[1]);
+            }
+            return Pair.of(4, 1);
+        }
+        return max;
     }
 
     private static Set<String> detectGLExtensions() {

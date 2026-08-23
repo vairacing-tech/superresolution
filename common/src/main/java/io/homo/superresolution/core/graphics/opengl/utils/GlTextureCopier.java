@@ -158,6 +158,7 @@ public class GlTextureCopier {
             );
             commandBuffer.end();
             RenderSystems.opengl().device().submitCommandBuffer(commandBuffer);
+            GL43.glMemoryBarrier(GL43.GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL43.GL_TEXTURE_FETCH_BARRIER_BIT);
             GL43.glBindSampler(0, 0);
             GlDebug.popGroup();
             return;

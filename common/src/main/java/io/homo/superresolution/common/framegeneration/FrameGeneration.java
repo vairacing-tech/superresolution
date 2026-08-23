@@ -71,7 +71,7 @@ public final class FrameGeneration {
     }
 
     public static synchronized void initialize() {
-        if (initialized || !VulkanPresentationFeature.isRequested()) {
+        if (initialized || !VulkanPresentationFeature.isRequested() || io.homo.superresolution.api.platform.Platform.isJavaOnlyMode()) {
             return;
         }
         FGConstantsFeature.initialize();

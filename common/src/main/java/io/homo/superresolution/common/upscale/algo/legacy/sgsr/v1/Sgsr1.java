@@ -46,8 +46,12 @@ import io.homo.superresolution.core.graphics.impl.texture.TextureUsages;
 import io.homo.superresolution.core.graphics.impl.vertex.IVertexBuffer;
 import io.homo.superresolution.core.graphics.impl.vertex.PrimitiveType;
 import io.homo.superresolution.core.graphics.opengl.pipeline.GlGraphicsPipeline;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class Sgsr1 extends AbstractAlgorithm {
+    private static final Logger LOGGER = LoggerFactory.getLogger("SuperResolution/SGSR1");
+
     private IShaderProgram sgsrShader;
     private GraphicsPipeline sgsrPipeline;
     private RenderPass renderPass;
@@ -94,6 +98,12 @@ public class Sgsr1 extends AbstractAlgorithm {
                         .uniformSamplerTexture("ps0", 1)
                         .build());
         sgsrShader.compile();
+
+        LOGGER.info("[SuperResolution] Algorithm: SGSR1");
+        LOGGER.info("[SuperResolution] Internal render resolution: {}x{}", RenderHandlerManager.getRenderWidth(), RenderHandlerManager.getRenderHeight());
+        LOGGER.info("[SuperResolution] Output resolution: {}x{}", RenderHandlerManager.getScreenWidth(), RenderHandlerManager.getScreenHeight());
+        LOGGER.info("[SuperResolution] Scale factor: {}", SuperResolutionConfig.getRenderScaleFactor());
+
         renderPass = RenderSystems.current().device().createRenderPass(
                 RenderPass.builder()
                         .frameBuffer(outputFbo)
@@ -105,7 +115,7 @@ public class Sgsr1 extends AbstractAlgorithm {
                 .rasterization(r -> r.cullMode(CullMode.None))
                 .depthStencil(r -> r.depthTestEnable(false).depthWriteEnable(false).stencilTestEnable(false))
                 .dynamicStates(DynamicStateFlags.Viewport)
-                .colorBlend(r -> r.addAttachment(ColorBlendAttachment.alphaBlend()))
+                .colorBlend(r -> r.addAttachment(ColorBlendAttachment.noBlend()))
                 .vertexFormat(FullscreenQuad.getVertexFormat())
                 .build(RenderSystems.current().device());
         quadVertexBuffer = FullscreenQuad.create(RenderSystems.current().device());
@@ -114,22 +124,50 @@ public class Sgsr1 extends AbstractAlgorithm {
     @Override
     public boolean dispatch(DispatchResource dispatchResource) {
         super.dispatch(dispatchResource);
+
+        SgsrViewportDimensions inputDim = SgsrViewportDimensions.input(
+                dispatchResource.renderWidth(), dispatchResource.renderHeight(),
+                dispatchResource.screenWidth(), dispatchResource.screenHeight()
+        );
+        SgsrViewportDimensions outputDim = SgsrViewportDimensions.output(
+                dispatchResource.renderWidth(), dispatchResource.renderHeight(),
+                dispatchResource.screenWidth(), dispatchResource.screenHeight()
+        );
+
         buffer.setVec4(
                 "ViewportInfo",
-                1.0f / dispatchResource.renderWidth(),
-                1.0f / dispatchResource.renderHeight(),
-                dispatchResource.renderWidth(),
-                dispatchResource.renderHeight()
-
+                1.0f / inputDim.getWidth(),
+                1.0f / inputDim.getHeight(),
+                (float) inputDim.getWidth(),
+                (float) inputDim.getHeight()
         );
         buffer.fillBuffer();
+
         sgsrPipeline.descriptorSet().samplerTexture("ps0", dispatchResource.resources().get(InputResourceType.Color));
         sgsrPipeline.descriptorSet().uniformBuffer("sgsr1_data", ubo);
         sgsrPipeline.descriptorSet().update();
+
+        // Explicit fallback bindings for OpenGL compatibility
+        int progId = (int) sgsrShader.handle();
+        int blockIdx = org.lwjgl.opengl.GL31.glGetUniformBlockIndex(progId, "sgsr1_data");
+        if (blockIdx != org.lwjgl.opengl.GL31.GL_INVALID_INDEX) {
+            org.lwjgl.opengl.GL31.glUniformBlockBinding(progId, blockIdx, 0);
+        }
+        org.lwjgl.opengl.GL30.glBindBufferBase(org.lwjgl.opengl.GL31.GL_UNIFORM_BUFFER, 0, (int) ubo.handle());
+
+        // Explicit full-screen raster state for SGSR output framebuffer
+        org.lwjgl.opengl.GL11.glDisable(org.lwjgl.opengl.GL11.GL_SCISSOR_TEST);
+        org.lwjgl.opengl.GL11.glViewport(0, 0, outputDim.getWidth(), outputDim.getHeight());
+        org.lwjgl.opengl.GL11.glDisable(org.lwjgl.opengl.GL11.GL_DEPTH_TEST);
+        org.lwjgl.opengl.GL11.glDisable(org.lwjgl.opengl.GL11.GL_CULL_FACE);
+        org.lwjgl.opengl.GL11.glDisable(org.lwjgl.opengl.GL11.GL_BLEND);
+        org.lwjgl.opengl.GL11.glColorMask(true, true, true, true);
+        org.lwjgl.opengl.GL11.glDepthMask(false);
+
         ICommandBuffer commandBuffer = RenderSystems.current().device().defaultCommandPool().createCommandBuffer();
         commandBuffer.begin();
         commandBuffer.writeToBuffer(ubo, 0, buffer);
-        commandBuffer.setViewport(0, 0, dispatchResource.screenWidth(), dispatchResource.screenHeight());
+        commandBuffer.setViewport(0, 0, outputDim.getWidth(), outputDim.getHeight());
         commandBuffer.beginRenderPass(renderPass);
         commandBuffer.bindPipeline(sgsrPipeline);
         commandBuffer.draw(quadVertexBuffer, quadVertexBuffer.getVertexCount(), 0);

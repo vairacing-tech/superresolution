@@ -24,6 +24,8 @@ import io.homo.superresolution.core.graphics.opengl.Gl;
 import io.homo.superresolution.core.graphics.shader.ShaderCompiler;
 import io.homo.superresolution.core.utils.FileReadHelper;
 import net.minecraft.client.Minecraft;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
@@ -31,6 +33,7 @@ import java.nio.file.Path;
 import java.util.*;
 
 public class ShaderSource {
+    private static final Logger LOGGER = LoggerFactory.getLogger("SuperResolution/ShaderSource");
     private final ShaderType type;
     private final String source;
     private final boolean isFilePath;
@@ -53,7 +56,7 @@ public class ShaderSource {
 
     public static String addCustomDefines(String source, Map<String, String> defines) {
         if (Gl.isLegacy()) {
-            ShaderCompiler.LOGGER.debug("Adding SR_GL41_COMPAT definition");
+            LOGGER.debug("Adding SR_GL41_COMPAT definition");
             defines.put("SR_GL41_COMPAT", "1");
         }
 

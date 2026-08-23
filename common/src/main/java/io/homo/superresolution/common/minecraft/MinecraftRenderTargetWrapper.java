@@ -175,11 +175,21 @@ public class MinecraftRenderTargetWrapper implements IBindableFrameBuffer {
 
     @Override
     public TextureFormat getDepthTextureFormat() {
-        #if MC_VER > MC_1_21_5
-        return TextureFormat.DEPTH32F;
-        #else
-        return TextureFormat.DEPTH32F;
+        #if MC_VER > MC_1_21_4
+        if (renderTarget != null && renderTarget.getDepthTexture() != null) {
+            com.mojang.blaze3d.GpuFormat fmt = renderTarget.getDepthTexture().getFormat();
+            if (fmt != null) {
+                return switch (fmt) {
+                    case D32_FLOAT -> TextureFormat.DEPTH32F;
+                    case D32_FLOAT_S8_UINT -> TextureFormat.DEPTH32F_STENCIL8;
+                    case D24_UNORM_S8_UINT -> TextureFormat.DEPTH24_STENCIL8;
+                    case D16_UNORM -> TextureFormat.DEPTH24;
+                    default -> TextureFormat.DEPTH32F;
+                };
+            }
+        }
         #endif
+        return TextureFormat.DEPTH32F;
     }
 
 

@@ -18,27 +18,44 @@
 
 package io.homo.superresolution.core.utils;
 
+import io.homo.superresolution.api.platform.Platform;
 import org.lwjgl.util.tinyfd.TinyFileDialogs;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class MessageBox {
+    private static final Logger LOGGER = LoggerFactory.getLogger("SuperResolution/MessageBox");
+
     private static void createMsgBox(String text, String caption, String type) {
-        #if MC_VER > MC_1_21_11
-        TinyFileDialogs.tinyfd_messageBox(
-                caption,
-                text,
-                "ok",
-                type,
-                0
-        );
-        #else
-        TinyFileDialogs.tinyfd_messageBox(
-                caption,
-                text,
-                "ok",
-                type,
-                true
-        );
-        #endif
+        if (Platform.isJavaOnlyMode()) {
+            switch (type) {
+                case "error" -> LOGGER.error("[{}] {}", caption, text);
+                case "warning" -> LOGGER.warn("[{}] {}", caption, text);
+                default -> LOGGER.info("[{}] {}", caption, text);
+            }
+            return;
+        }
+        try {
+            #if MC_VER > MC_1_21_11
+            TinyFileDialogs.tinyfd_messageBox(
+                    caption,
+                    text,
+                    "ok",
+                    type,
+                    0
+            );
+            #else
+            TinyFileDialogs.tinyfd_messageBox(
+                    caption,
+                    text,
+                    "ok",
+                    type,
+                    true
+            );
+            #endif
+        } catch (Throwable t) {
+            LOGGER.error("Failed to display message box [{}]: {}", caption, text, t);
+        }
     }
 
     public static void createError(String text, String caption) {

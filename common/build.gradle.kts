@@ -113,8 +113,20 @@ dependencies {
 
     compileOnly("com.electronwill.night-config:toml:3.8.3")
     compileOnly("com.electronwill.night-config:core:3.8.3")
-
     compileOnly("net.neoforged:bus:8.0.5")
+
+    testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+    testImplementation("org.lwjgl:lwjgl:${versionConfig.common.lwjglVersion}")
+    testImplementation("org.lwjgl:lwjgl-opengl:${versionConfig.common.lwjglVersion}")
+    testImplementation("net.java.dev.jna:jna:5.14.0")
+    testImplementation("it.unimi.dsi:fastutil:8.5.13")
+    testImplementation("org.joml:joml:1.10.8")
+    testImplementation("org.slf4j:slf4j-api:2.0.12")
+    testImplementation("org.apache.logging.log4j:log4j-api:2.22.1")
+    testImplementation("net.neoforged:bus:8.0.5")
+    testRuntimeOnly("org.apache.logging.log4j:log4j-core:2.22.1")
+    testRuntimeOnly("org.apache.logging.log4j:log4j-slf4j2-impl:2.22.1")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 
     if (versionConfig.common.minecraftVersion <= "1.21.1") {
         compileOnly("org.ow2.asm:asm:9.7.1")
@@ -244,6 +256,20 @@ shaderCompatSourceSet.runtimeClasspath += mainSourceSet.output
 shaderCompatSourceSet.runtimeClasspath += sharedSourceSet.output
 shaderCompatSourceSet.runtimeClasspath += irisapiSourceSet.output
 
+val testSourceSet = sourceSets["test"]
+testSourceSet.compileClasspath += mainSourceSet.compileClasspath
+testSourceSet.runtimeClasspath += mainSourceSet.runtimeClasspath
+testSourceSet.compileClasspath += mainSourceSet.output
+testSourceSet.runtimeClasspath += mainSourceSet.output
+testSourceSet.compileClasspath += sharedSourceSet.output
+testSourceSet.runtimeClasspath += sharedSourceSet.output
+testSourceSet.compileClasspath += irisapiSourceSet.output
+testSourceSet.runtimeClasspath += irisapiSourceSet.output
+testSourceSet.compileClasspath += hackSourceSet.output
+testSourceSet.runtimeClasspath += hackSourceSet.output
+testSourceSet.compileClasspath += shaderCompatSourceSet.output
+testSourceSet.runtimeClasspath += shaderCompatSourceSet.output
+
 tasks.named<Jar>("jar") {
     from(irisapiSourceSet.output)
     from(sharedSourceSet.output)
@@ -270,6 +296,11 @@ tasks.named<ProcessResources>("processResources") {
     } else {
         exclude("**/libSuperResolution*+*+debug.*")
     }
+}
+
+tasks.withType<Test> {
+    useJUnitPlatform()
+    classpath = testSourceSet.runtimeClasspath
 }
 
 /*
