@@ -26,6 +26,11 @@ public class HackSRWorkModeProvider implements SRWorkModeProvider {
     }
 
     @Override
+    public void reloadShaderPack() {
+        IrisCompatHelper.reloadShaderPack();
+    }
+
+    @Override
     public SRWorkModeState getState() {
         SRWorkModeState defaults = SRWorkModeState.defaults();
         return new SRWorkModeState(

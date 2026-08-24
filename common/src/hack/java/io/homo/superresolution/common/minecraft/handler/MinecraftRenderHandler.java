@@ -24,6 +24,8 @@ import io.homo.superresolution.api.SuperResolutionAPI;
 import io.homo.superresolution.api.event.AlgorithmDispatchEvent;
 import io.homo.superresolution.api.event.AlgorithmDispatchFinishEvent;
 import io.homo.superresolution.common.SuperResolution;
+import io.homo.superresolution.common.compat.iris.IrisCompatHelper;
+import static io.homo.superresolution.common.SuperResolution.LOGGER;
 import io.homo.superresolution.common.config.SuperResolutionConfig;
 import io.homo.superresolution.common.config.enums.CaptureMode;
 import io.homo.superresolution.common.debug.imgui.ImGuiDebugContext;
@@ -435,21 +437,31 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
         }
     }
 
-    public void updateRenderTargetSize() {
+    public boolean updateRenderTargetSize() {
         if (!initialized) {
-            return;
+            return false;
         }
         int renderWidth = RenderHandlerManager.getRenderWidth();
         int renderHeight = RenderHandlerManager.getRenderHeight();
+        int screenWidth = RenderHandlerManager.getScreenWidth();
+        int screenHeight = RenderHandlerManager.getScreenHeight();
+
+        int oldW = renderTarget != null ? renderTarget.getWidth() : -1;
+        int oldH = renderTarget != null ? renderTarget.getHeight() : -1;
+        boolean sizeChanged = (oldW != renderWidth || oldH != renderHeight);
+
+        if (!sizeChanged) {
+            return false;
+        }
+
         io.homo.superresolution.common.temporal.TemporalHistoryManager.getInstance().checkResolutionChange(
                 renderWidth, renderHeight, "MinecraftRenderHandler.updateRenderTargetSize"
         );
-        int screenWidth = RenderHandlerManager.getScreenWidth();
-        int screenHeight = RenderHandlerManager.getScreenHeight();
+
         callOnRenderTargets(
-                (renderTarget) -> {
-                    if (renderTarget.getWidth() != renderWidth || renderTarget.getHeight() != renderHeight) {
-                        resizeRenderTarget(renderTarget, renderWidth, renderHeight);
+                (rt) -> {
+                    if (rt.getWidth() != renderWidth || rt.getHeight() != renderHeight) {
+                        resizeRenderTarget(rt, renderWidth, renderHeight);
                     }
                 }, true
         );
@@ -474,6 +486,10 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
             emptyMotionVectorTexture.destroy();
             emptyMotionVectorTexture = RenderSystems.current().device().createTexture(depthDesc);
         }
+
+        LOGGER.debug("[SR-RESIZE] Internal size changed: {}x{} -> {}x{}", oldW, oldH, renderWidth, renderHeight);
+
+        return true;
     }
 
     public void onRenderHandBegin() {

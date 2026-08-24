@@ -31,6 +31,16 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public abstract class GlTextureViewMixin {
     @Shadow
     public abstract com.mojang.blaze3d.opengl.GlTexture texture();
+
+    #if MC_VER >= MC_26_2
+    @Inject(method = "glId", at = @At("HEAD"), cancellable = true)
+    public void getDynamicGlId(CallbackInfoReturnable<Integer> cir) {
+        if (this.texture() instanceof io.homo.superresolution.common.minecraft.GpuTextureAdapter adapter) {
+            cir.setReturnValue(adapter.glId());
+        }
+    }
+    #endif
+
     #if MC_VER < MC_26_2
     @Inject(method = "getFbo", at = @At("HEAD"), cancellable = true)
     public void replaceFbo(

@@ -86,6 +86,20 @@ public class AlgorithmDescriptions {
             )
             .supportJitter(true)
             .build();
+    private static final List<QualityPreset> SGSR1_QUALITY_PRESETS = List.of(
+            new QualityPreset()
+                    .setName(Component.literal("50%"))
+                    .setCodeName("sgsr1_50")
+                    .setUpscaleRatio(2.0f),
+            new QualityPreset()
+                    .setName(Component.literal("45%"))
+                    .setCodeName("sgsr1_45")
+                    .setUpscaleRatio(1.0f / 0.45f),
+            new QualityPreset()
+                    .setName(Component.literal("40%"))
+                    .setCodeName("sgsr1_40")
+                    .setUpscaleRatio(2.5f)
+    );
     public static final AlgorithmDescription<Sgsr1> SGSR1 = AlgorithmDescription.builder(Sgsr1.class)
             .briefName("SGSR V1")
             .codeName("sgsr1")
@@ -95,6 +109,8 @@ public class AlgorithmDescriptions {
                             .glMajorVersion(4)
                             .glMinorVersion(0)
             )
+            .qualityPresets(SGSR1_QUALITY_PRESETS)
+            .customUpscaleRatio(true)
             .build();
     public static final AlgorithmDescription<Sgsr2> SGSR2 = AlgorithmDescription.builder(Sgsr2.class)
             .briefName("SGSR V2")

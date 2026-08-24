@@ -25,7 +25,15 @@ import java.util.List;
 
 public class AndroidConfigScreen extends Screen {
     private final Screen parentScreen;
-    private static final float[] SCALE_PRESETS = {2.0f, 1.7f, 1.5f, 1.33f, 1.0f};
+    private static final float[] SCALE_PRESETS = {
+            2.5f,         // 40%
+            1.0f / 0.45f, // 45%
+            2.0f,         // 50%
+            1.7f,         // ~59%
+            1.5f,         // ~67%
+            1.33f,        // ~75%
+            1.0f          // 100%
+    };
     private static final float[] SHARPNESS_PRESETS = {0.0f, 0.25f, 0.5f, 0.55f, 0.75f, 1.0f};
 
     private Button statusButton;
@@ -156,7 +164,7 @@ public class AndroidConfigScreen extends Screen {
     private Component getScaleText() {
         float ratio = (float) SuperResolutionConfig.getUpscaleRatio();
         int percent = Math.round((1.0f / ratio) * 100.0f);
-        return Component.literal("Render Scale: " + percent + "% (" + String.format("%.2fx", ratio) + ")");
+        return Component.literal("Render Scale: " + percent + "% (" + String.format(java.util.Locale.ROOT, "%.2fx", ratio) + ")");
     }
 
     private Component getSharpnessText() {

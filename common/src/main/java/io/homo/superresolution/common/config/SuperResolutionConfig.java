@@ -550,9 +550,6 @@ public class SuperResolutionConfig {
                 SuperResolution.LOGGER.info("[SGSR1-LIFECYCLE] native target restored");
             }
             resolutionChangeCallback.run();
-            if (SRWorkModeManager.isCurrentMode(SRWorkModeManager.SHADER_COMPAT)) {
-                SRWorkModeManager.reloadShaderPack();
-            }
             SuperResolution.LOGGER.info("[SGSR1-LIFECYCLE] transition complete");
         }
         return true;

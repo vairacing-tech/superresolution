@@ -41,11 +41,8 @@ import io.homo.superresolution.core.graphics.opengl.GlState;
 
 public class FrameBufferRenderTargetAdapter extends RenderTarget {
     private IFrameBuffer frameBuffer;
-    private GpuTextureAdapter colorTextureAdapter;
-    private GpuTextureAdapter depthTextureAdapter;
-    private long cachedColorTextureHandle = -1;
-    private long cachedDepthTextureHandle = -1;
-    private long cachedFrameBufferHandle = -1;
+    private final GpuTextureAdapter colorTextureAdapter;
+    private final GpuTextureAdapter depthTextureAdapter;
 
     #if MC_VER >= MC_1_21_6
     private GpuTextureView colorTextureView;
@@ -63,6 +60,10 @@ public class FrameBufferRenderTargetAdapter extends RenderTarget {
                 #endif
         );
         this.frameBuffer = frameBuffer;
+        this.colorTextureAdapter = new GpuTextureAdapter(frameBuffer, FrameBufferAttachmentType.Color);
+        this.depthTextureAdapter = new GpuTextureAdapter(frameBuffer, FrameBufferAttachmentType.AnyDepth);
+        this.colorTexture = this.colorTextureAdapter;
+        this.depthTexture = this.depthTextureAdapter;
         updateState();
     }
 
@@ -110,6 +111,10 @@ public class FrameBufferRenderTargetAdapter extends RenderTarget {
 
     #endif
     private void updateState() {
+        if (frameBuffer == null) {
+            return;
+        }
+        boolean sizeChanged = (this.width != frameBuffer.getWidth() || this.height != frameBuffer.getHeight());
         this.width = frameBuffer.getWidth();
         this.height = frameBuffer.getHeight();
         #if !(MC_VER > MC_1_21_6)
@@ -117,52 +122,14 @@ public class FrameBufferRenderTargetAdapter extends RenderTarget {
         this.viewHeight = frameBuffer.getHeight();
         #endif
 
-        long currentFbHandle = frameBuffer.handle();
-        ITexture colorTex = frameBuffer.getTexture(FrameBufferAttachmentType.Color);
-        long colorTexHandle = colorTex.handle();
-
-        if (colorTextureAdapter == null || cachedColorTextureHandle != colorTexHandle || cachedFrameBufferHandle != currentFbHandle) {
-            #if MC_VER >= MC_1_21_6
-            closeColorTextureView();
-            #endif
-            colorTextureAdapter = (GpuTextureAdapter) GpuTextureAdapter.ofTexture(colorTex);
-            colorTextureAdapter.bindFramebuffer(frameBuffer);
-            cachedColorTextureHandle = colorTexHandle;
-            #if MC_VER >= MC_1_21_6
-            this.colorTextureView = RenderSystem.getDevice().createTextureView(colorTextureAdapter);
-            #endif
+        #if MC_VER >= MC_1_21_6
+        if (sizeChanged) {
+            closeTextureViews();
         }
-        this.colorTexture = colorTextureAdapter;
+        #endif
 
-        ITexture depthTex = frameBuffer.getTexture(FrameBufferAttachmentType.DepthStencil);
-        if (depthTex == null) {
-            depthTex = frameBuffer.getTexture(FrameBufferAttachmentType.Depth);
-        }
-
-        if (depthTex != null) {
-            long depthTexHandle = depthTex.handle();
-            if (depthTextureAdapter == null || cachedDepthTextureHandle != depthTexHandle || cachedFrameBufferHandle != currentFbHandle) {
-                #if MC_VER >= MC_1_21_6
-                closeDepthTextureView();
-                #endif
-                depthTextureAdapter = (GpuTextureAdapter) GpuTextureAdapter.ofTexture(depthTex);
-                depthTextureAdapter.bindFramebuffer(frameBuffer);
-                cachedDepthTextureHandle = depthTexHandle;
-                #if MC_VER >= MC_1_21_6
-                this.depthTextureView = RenderSystem.getDevice().createTextureView(depthTextureAdapter);
-                #endif
-            }
-            this.depthTexture = depthTextureAdapter;
-        } else {
-            #if MC_VER >= MC_1_21_6
-            closeDepthTextureView();
-            #endif
-            depthTextureAdapter = null;
-            cachedDepthTextureHandle = -1;
-            this.depthTexture = null;
-        }
-
-        cachedFrameBufferHandle = currentFbHandle;
+        this.colorTexture = this.colorTextureAdapter;
+        this.depthTexture = this.depthTextureAdapter;
     }
 
 
@@ -174,13 +141,10 @@ public class FrameBufferRenderTargetAdapter extends RenderTarget {
         #if MC_VER >= MC_1_21_6
         closeTextureViews();
         #endif
-        colorTextureAdapter = null;
-        depthTextureAdapter = null;
-        cachedColorTextureHandle = -1;
-        cachedDepthTextureHandle = -1;
-        cachedFrameBufferHandle = -1;
-        this.colorTexture = null;
-        this.depthTexture = null;
+        super.destroyBuffers();
+        this.colorTexture = this.colorTextureAdapter;
+        this.depthTexture = this.depthTextureAdapter;
+        updateState();
     }
 
     public void copyDepthFrom(@NotNull RenderTarget renderTarget) {
@@ -231,13 +195,13 @@ public class FrameBufferRenderTargetAdapter extends RenderTarget {
     @Nullable
     public GpuTexture getColorTexture() {
         updateState();
-        return this.colorTexture;
+        return this.colorTextureAdapter;
     }
 
     @Nullable
     public GpuTexture getDepthTexture() {
         updateState();
-        return this.depthTexture;
+        return this.depthTextureAdapter;
     }
 
     public FrameBufferRenderTargetAdapter bindFrameBuffer(IFrameBuffer frameBuffer) {
@@ -246,7 +210,6 @@ public class FrameBufferRenderTargetAdapter extends RenderTarget {
             closeTextureViews();
             #endif
             this.frameBuffer = frameBuffer;
-            this.cachedFrameBufferHandle = -1;
         }
         return this;
     }

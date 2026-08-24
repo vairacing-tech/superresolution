@@ -21,6 +21,7 @@ package io.homo.superresolution.common.minecraft;
 import io.homo.superresolution.core.graphics.impl.texture.ITexture;
 #if MC_VER > MC_1_21_4
 import io.homo.superresolution.core.graphics.impl.framebuffer.IFrameBuffer;
+import io.homo.superresolution.core.graphics.impl.framebuffer.FrameBufferAttachmentType;
 import com.mojang.blaze3d.opengl.DirectStateAccess;
 import com.mojang.blaze3d.opengl.GlTexture;
 import com.mojang.blaze3d.textures.AddressMode;
@@ -31,10 +32,52 @@ import io.homo.superresolution.core.graphics.impl.texture.TextureFormat;
 import javax.annotation.Nullable;
 
 public class GpuTextureAdapter extends GlTexture {
-    private final ITexture texture;
-    public IFrameBuffer frameBuffer;
+    private final ITexture staticTexture;
+    private final IFrameBuffer frameBuffer;
+    private final FrameBufferAttachmentType attachmentType;
 
-    GpuTextureAdapter(ITexture texture) {
+    public GpuTextureAdapter(IFrameBuffer frameBuffer, FrameBufferAttachmentType attachmentType) {
+        #if MC_VER > MC_1_21_5
+        super(
+                GpuTexture.USAGE_COPY_DST |
+                        GpuTexture.USAGE_COPY_SRC |
+                        GpuTexture.USAGE_TEXTURE_BINDING |
+                        GpuTexture.USAGE_RENDER_ATTACHMENT,
+                "DynamicFbAttachment--" + attachmentType,
+                #if MC_VER < MC_26_2
+                resolveFormat(frameBuffer, attachmentType) != null && resolveFormat(frameBuffer, attachmentType).isDepth() ?
+                        com.mojang.blaze3d.textures.TextureFormat.DEPTH32 :
+                        com.mojang.blaze3d.textures.TextureFormat.RGBA8,
+                #else
+                toMojangGpuFormat(resolveFormat(frameBuffer, attachmentType)),
+                #endif
+                frameBuffer != null ? frameBuffer.getWidth() : 1,
+                frameBuffer != null ? frameBuffer.getHeight() : 1,
+                1,
+                1,
+                (int) resolveHandle(frameBuffer, attachmentType)
+                #if MC_VER > MC_26_1_2
+                ,(com.mojang.blaze3d.opengl.FrameBufferCache)MinecraftUtils.getFrameBufferCache()
+                #endif
+        );
+        #else
+        super(
+                "DynamicFbAttachment--" + attachmentType,
+                resolveFormat(frameBuffer, attachmentType) != null && resolveFormat(frameBuffer, attachmentType).isDepth() ?
+                        com.mojang.blaze3d.textures.TextureFormat.DEPTH32 :
+                        com.mojang.blaze3d.textures.TextureFormat.RGBA8,
+                frameBuffer != null ? frameBuffer.getWidth() : 1,
+                frameBuffer != null ? frameBuffer.getHeight() : 1,
+                1,
+                (int) resolveHandle(frameBuffer, attachmentType)
+        );
+        #endif
+        this.frameBuffer = frameBuffer;
+        this.attachmentType = attachmentType;
+        this.staticTexture = null;
+    }
+
+    public GpuTextureAdapter(ITexture texture) {
         #if MC_VER > MC_1_21_5
         super(
                 GpuTexture.USAGE_COPY_DST |
@@ -69,18 +112,102 @@ public class GpuTextureAdapter extends GlTexture {
                 (int) texture.handle()
         );
         #endif
-        this.texture = texture;
+        this.staticTexture = texture;
+        this.frameBuffer = null;
+        this.attachmentType = null;
+    }
+
+    private static TextureFormat resolveFormat(IFrameBuffer frameBuffer, FrameBufferAttachmentType attachmentType) {
+        if (frameBuffer == null || attachmentType == null) {
+            return TextureFormat.RGBA8;
+        }
+        ITexture tex = frameBuffer.getTexture(attachmentType);
+        if (tex == null && (attachmentType == FrameBufferAttachmentType.Depth || attachmentType == FrameBufferAttachmentType.DepthStencil || attachmentType == FrameBufferAttachmentType.AnyDepth)) {
+            tex = frameBuffer.getTexture(FrameBufferAttachmentType.DepthStencil);
+            if (tex == null) {
+                tex = frameBuffer.getTexture(FrameBufferAttachmentType.Depth);
+            }
+        }
+        if (tex != null) {
+            return tex.getTextureFormat();
+        }
+        if (attachmentType == FrameBufferAttachmentType.Depth || attachmentType == FrameBufferAttachmentType.DepthStencil || attachmentType == FrameBufferAttachmentType.AnyDepth) {
+            TextureFormat fbDepthFmt = frameBuffer.getDepthTextureFormat();
+            return fbDepthFmt != null ? fbDepthFmt : TextureFormat.DEPTH32F;
+        }
+        return TextureFormat.RGBA8;
+    }
+
+    private static long resolveHandle(IFrameBuffer frameBuffer, FrameBufferAttachmentType attachmentType) {
+        if (frameBuffer == null || attachmentType == null) {
+            return -1;
+        }
+        ITexture tex = frameBuffer.getTexture(attachmentType);
+        if (tex == null && (attachmentType == FrameBufferAttachmentType.Depth || attachmentType == FrameBufferAttachmentType.DepthStencil || attachmentType == FrameBufferAttachmentType.AnyDepth)) {
+            tex = frameBuffer.getTexture(FrameBufferAttachmentType.DepthStencil);
+            if (tex == null) {
+                tex = frameBuffer.getTexture(FrameBufferAttachmentType.Depth);
+            }
+        }
+        return tex != null ? tex.handle() : -1;
+    }
+
+    public ITexture currentTexture() {
+        if (frameBuffer != null && attachmentType != null) {
+            ITexture tex = frameBuffer.getTexture(attachmentType);
+            if (tex == null && (attachmentType == FrameBufferAttachmentType.Depth || attachmentType == FrameBufferAttachmentType.DepthStencil || attachmentType == FrameBufferAttachmentType.AnyDepth)) {
+                tex = frameBuffer.getTexture(FrameBufferAttachmentType.DepthStencil);
+                if (tex == null) {
+                    tex = frameBuffer.getTexture(FrameBufferAttachmentType.Depth);
+                }
+            }
+            return tex;
+        }
+        return staticTexture;
     }
 
     public int getWidth(int mipLevel) {
-        return texture.getWidth();
+        if (frameBuffer != null) {
+            return frameBuffer.getWidth();
+        }
+        ITexture tex = currentTexture();
+        return tex != null ? tex.getWidth() : 0;
     }
 
     public int getHeight(int mipLevel) {
-        return texture.getHeight();
+        if (frameBuffer != null) {
+            return frameBuffer.getHeight();
+        }
+        ITexture tex = currentTexture();
+        return tex != null ? tex.getHeight() : 0;
+    }
+
+    public int getWidth() {
+        if (frameBuffer != null) {
+            return frameBuffer.getWidth();
+        }
+        ITexture tex = currentTexture();
+        return tex != null ? tex.getWidth() : 0;
+    }
+
+    public int getHeight() {
+        if (frameBuffer != null) {
+            return frameBuffer.getHeight();
+        }
+        ITexture tex = currentTexture();
+        return tex != null ? tex.getHeight() : 0;
     }
 
     #if MC_VER >= MC_26_2
+    @Override
+    public com.mojang.blaze3d.GpuFormat getFormat() {
+        ITexture tex = currentTexture();
+        if (tex != null && tex.getTextureFormat() != null) {
+            return toMojangGpuFormat(tex.getTextureFormat());
+        }
+        return super.getFormat();
+    }
+
     public static com.mojang.blaze3d.GpuFormat toMojangGpuFormat(TextureFormat format) {
         if (format == null) return com.mojang.blaze3d.GpuFormat.RGBA8_UNORM;
         return switch (format) {
@@ -99,19 +226,27 @@ public class GpuTextureAdapter extends GlTexture {
         return new GpuTextureAdapter(texture);
     }
 
+    public static GlTexture ofAttachment(IFrameBuffer frameBuffer, FrameBufferAttachmentType attachmentType) {
+        return new GpuTextureAdapter(frameBuffer, attachmentType);
+    }
+
     public GpuTextureAdapter bindFramebuffer(IFrameBuffer frameBuffer) {
-        this.frameBuffer = frameBuffer;
         return this;
     }
 
+    @Override
     public void close() {
-        if (!this.closed) {
+        if (staticTexture != null && !this.closed) {
             this.closed = true;
         }
     }
 
+    @Override
     public boolean isClosed() {
-        return this.closed;
+        if (staticTexture != null) {
+            return this.closed;
+        }
+        return frameBuffer == null || frameBuffer.handle() <= 0;
     }
 
     public int getFbo(DirectStateAccess directStateAccess,
@@ -124,8 +259,10 @@ public class GpuTextureAdapter extends GlTexture {
 
     }
 
+    @Override
     public int glId() {
-        return Math.toIntExact(this.texture.handle());
+        ITexture tex = currentTexture();
+        return tex != null ? Math.toIntExact(tex.handle()) : -1;
     }
 
     public void setAddressMode(AddressMode addressMode, AddressMode addressMode2) {
