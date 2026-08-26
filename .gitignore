@@ -172,3 +172,6 @@ __pycache__
 .gradle*
 /AGENTS.md.bak
 /.codemoss/
+/logs_phase2c/
+/common/logs/
+/dist/

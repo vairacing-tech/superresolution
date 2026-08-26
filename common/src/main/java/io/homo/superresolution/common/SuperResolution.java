@@ -234,6 +234,9 @@ public final class SuperResolution implements Destroyable {
             LOGGER.info("[SuperResolution] Native backend: SKIPPED");
             LOGGER.info("[SuperResolution] Glslang/SPIR-V compiler: SKIPPED");
             LOGGER.info("[SuperResolution] Internal Vulkan backend: SKIPPED");
+            if (com.lsfg.minecraft.LsfgPlatform.isProbeEnabled()) {
+                io.homo.superresolution.common.framegeneration.FrameGenerationManager.initialize(Platform.currentPlatform.getGameFolder());
+            }
         } else {
             NativeLibManager.extract(SuperResolutionConstants.NATIVE_LIBRARIES_DIR.getPath());
             NativeLibManager.load(SuperResolutionConstants.NATIVE_LIBRARIES_DIR.getPath());
@@ -526,6 +529,7 @@ public final class SuperResolution implements Destroyable {
         isInit = false;
         isRenderingInitialized = false;
         graphicsBackendDestroyed = false;
+        io.homo.superresolution.common.framegeneration.FrameGenerationManager.destroy();
         FrameGeneration.shutdown();
         VulkanPresentationFeature.shutdown();
         LowLatency.shutdown();
