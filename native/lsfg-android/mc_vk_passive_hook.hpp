@@ -29,7 +29,7 @@ struct ProbeStats {
 };
 
 /// Initializes the passive Vulkan diagnostic observation layer.
-void init_passive_vulkan_diagnostics();
+void init_passive_vulkan_diagnostics(bool enable_v1_probe = true, bool enable_v2_probe = true);
 
 /// Returns whether any Vulkan activity (GIPA/GDPA/Swapchain/Present) has been observed by our hook.
 bool is_vulkan_observed();

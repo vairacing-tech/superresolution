@@ -54,22 +54,31 @@ public final class LsfgPlatform {
         return isAndroidArm64();
     }
 
+    public static boolean isBridgeV1ProbeEnabled() {
+        if (!isSupportedPlatform()) {
+            return false;
+        }
+        String bridgeProp = System.getProperty("superresolution.lsfg_bridge_probe");
+        return bridgeProp != null && (bridgeProp.equalsIgnoreCase("true") || bridgeProp.equals("1"));
+    }
+
+    public static boolean isBridgeV2ProbeEnabled() {
+        if (!isSupportedPlatform()) {
+            return false;
+        }
+        String bridgeV2Prop = System.getProperty("superresolution.lsfg_bridge_v2_probe");
+        return bridgeV2Prop != null && (bridgeV2Prop.equalsIgnoreCase("true") || bridgeV2Prop.equals("1"));
+    }
+
     public static boolean isProbeEnabled() {
         if (!isSupportedPlatform()) {
             return false;
         }
-
-        String bridgeProp = System.getProperty("superresolution.lsfg_bridge_probe");
-        if (bridgeProp != null && (bridgeProp.equalsIgnoreCase("true") || bridgeProp.equals("1"))) {
+        if (isBridgeV1ProbeEnabled() || isBridgeV2ProbeEnabled()) {
             return true;
         }
-
         String prop = System.getProperty("superresolution.lsfg_probe");
-        if (prop != null && (prop.equalsIgnoreCase("true") || prop.equals("1"))) {
-            return true;
-        }
-
-        return false;
+        return prop != null && (prop.equalsIgnoreCase("true") || prop.equals("1"));
     }
 
     private static OsType detectOs() {
