@@ -97,6 +97,19 @@ function Remove-CppTrivia {
     return -join $chars
 }
 
+function Mask-CppFunctionAttributes {
+    param([string]$TriviaFreeSource)
+    $chars = $TriviaFreeSource.ToCharArray()
+    foreach ($pattern in @('__attribute__\s*\(\([^;{}]*?\)\)', '\[\[[\s\S]*?\]\]')) {
+        foreach ($attribute in [regex]::Matches($TriviaFreeSource, $pattern)) {
+            for ($i = $attribute.Index; $i -lt $attribute.Index + $attribute.Length; $i++) {
+                if ($chars[$i] -ne "`r" -and $chars[$i] -ne "`n") { $chars[$i] = ' ' }
+            }
+        }
+    }
+    return -join $chars
+}
+
 function Get-MatchingBraceIndex {
     param([string]$TriviaFreeSource, [int]$OpenIndex)
     $depth = 0
@@ -124,15 +137,9 @@ function Get-EnclosingScopeClose {
 function Get-CppFunctionInfos {
     param([string]$Source)
     $clean = Remove-CppTrivia $Source
-    # Function-like compiler attributes can otherwise greedily consume the real
+    # Function-like GNU and standard attributes can otherwise consume the real
     # signature and make the attribute name look like the function name.
-    $scanChars = $clean.ToCharArray()
-    foreach ($attribute in [regex]::Matches($clean, '__attribute__\s*\(\([^;{}]*?\)\)')) {
-        for ($i = $attribute.Index; $i -lt $attribute.Index + $attribute.Length; $i++) {
-            if ($scanChars[$i] -ne "`r" -and $scanChars[$i] -ne "`n") { $scanChars[$i] = ' ' }
-        }
-    }
-    $scanClean = -join $scanChars
+    $scanClean = Mask-CppFunctionAttributes $clean
     $controlWords = @('if', 'for', 'while', 'switch', 'catch')
     $seen = [System.Collections.Generic.HashSet[int]]::new()
     $functions = [System.Collections.Generic.List[object]]::new()
@@ -273,6 +280,15 @@ function Get-CachedRealVulkanPfnNames {
                 }
             }
         }
+        foreach ($assignment in [regex]::Matches($clean, '\b(?:auto|PFN_vk[A-Za-z0-9_]*)\s+(?<lhs>[A-Za-z_]\w*)\s*(?:\{\s*(?<rhsBrace>[^;{}]+)\s*\}|\(\s*(?<rhsParen>[^;()]+)\s*\))\s*;')) {
+            $rhs = if ($assignment.Groups['rhsBrace'].Success) { $assignment.Groups['rhsBrace'].Value } else { $assignment.Groups['rhsParen'].Value }
+            foreach ($known in @($names)) {
+                if (Test-Pattern $rhs "(?:\b|(?:->|\.))$([regex]::Escape($known))\b") {
+                    if ($names.Add($assignment.Groups['lhs'].Value)) { $changed = $true }
+                    break
+                }
+            }
+        }
     }
     return $names
 }
@@ -283,7 +299,8 @@ function Find-RealVulkanCallsUnderStateMutex {
     $lockData = Get-StateMutexLockIntervals $Source
     $pfnNames = Get-CachedRealVulkanPfnNames $Source
     $violations = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
-    foreach ($function in Get-CppFunctionInfos $Source) {
+    $functions = @(Get-CppFunctionInfos $Source)
+    foreach ($function in $functions) {
         if (-not (Test-Pattern $function.CleanBody '\bg_stateMutex\b')) { continue }
         $functionIntervals = @($lockData.Intervals | Where-Object { $_.Start -gt $function.OpenIndex -and $_.Start -lt $function.CloseIndex })
         foreach ($mutexUse in [regex]::Matches($function.CleanBody, '\bg_stateMutex\b')) {
@@ -305,6 +322,15 @@ function Find-RealVulkanCallsUnderStateMutex {
             }
         }
     }
+    $globalDeclarations = @([regex]::Matches($clean, '(?:\bextern\s+)?\bstd::mutex\s+g_stateMutex\s*;'))
+    foreach ($mutexUse in [regex]::Matches($clean, '\bg_stateMutex\b')) {
+        $insideFunction = @($functions | Where-Object { $mutexUse.Index -gt $_.OpenIndex -and $mutexUse.Index -lt $_.CloseIndex }).Count -gt 0
+        $isDeclaration = @($globalDeclarations | Where-Object { $mutexUse.Index -ge $_.Index -and $mutexUse.Index -lt ($_.Index + $_.Length) }).Count -gt 0
+        if (-not $insideFunction -and -not $isDeclaration) {
+            $line = 1 + ([regex]::Matches($clean.Substring(0, $mutexUse.Index), "`n")).Count
+            [void]$violations.Add("unparsed function or scope containing g_stateMutex at line $line")
+        }
+    }
     return @($violations | Sort-Object)
 }
 
@@ -317,15 +343,31 @@ function Assert-NoRealVulkanCallsUnderStateMutex {
 function Get-CallerOutputWrites {
     param([string]$Text, [string]$OutputPointer, [switch]$IncludeCount)
     $clean = Remove-CppTrivia $Text
-    $pointer = [regex]::Escape($OutputPointer)
+    $pointerAliases = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    [void]$pointerAliases.Add($OutputPointer)
+    $changed = $true
+    while ($changed) {
+        $changed = $false
+        foreach ($assignment in [regex]::Matches($clean, '(?:\b(?:auto|[A-Za-z_]\w*(?:::\w+)*(?:\s*\*)?)\s+)?\b(?<lhs>[A-Za-z_]\w*)\s*(?:=|\{|\()\s*(?<rhs>[^;{}()]+)(?:\}|\))?\s*;')) {
+            foreach ($known in @($pointerAliases)) {
+                if (Test-Pattern $assignment.Groups['rhs'].Value "(?:&\s*)?\b$([regex]::Escape($known))\b(?:\s*\[[^\]]*\]|\s*[+\-].*)?") {
+                    if ($pointerAliases.Add($assignment.Groups['lhs'].Value)) { $changed = $true }
+                    break
+                }
+            }
+        }
+    }
     $writes = [System.Collections.Generic.List[object]]::new()
-    $patterns = @(
-        @{ Kind = 'array write'; Regex = "\b$pointer\s*\[[^\]]*\]\s*(?:[+\-*/%]?=|\+\+|--)" },
-        @{ Kind = 'pointer write'; Regex = "\*\s*\(?\s*$pointer(?:\s*\+\+|\s*--)?\s*\)?\s*(?:[+\-*/%]?=|\+\+|--)" },
-        @{ Kind = 'memcpy/memmove'; Regex = "\b(?:std::)?mem(?:cpy|move)\s*\(\s*$pointer\b" },
-        @{ Kind = 'std copy'; Regex = "\bstd::(?:(?:ranges)::)?copy(?:_n)?\s*\([^;]*,\s*$pointer(?:\s*[+\-][^)]*)?\s*\)" },
-        @{ Kind = 'std transform/fill'; Regex = "\bstd::(?:transform|fill(?:_n)?)\s*\([^;]*,\s*$pointer(?:\s*[+\-][^)]*)?\s*\)" }
-    )
+    $patterns = [System.Collections.Generic.List[object]]::new()
+    foreach ($alias in @($pointerAliases)) {
+        $pointer = [regex]::Escape($alias)
+        $patterns.Add(@{ Kind = 'array write'; Regex = "\b$pointer\s*\[[^\]]*\]\s*(?:[+\-*/%]?=|\+\+|--)" })
+        $patterns.Add(@{ Kind = 'pointer write'; Regex = "(?:\*\s*$pointer\s*(?:\+\+|--)?|\*\s*\(\s*$pointer\s*(?:\+\+|--|[+\-][^)]*)?\s*\))\s*(?:[+\-*/%]?=|\+\+|--)" })
+        $patterns.Add(@{ Kind = 'memcpy/memmove'; Regex = "\b(?:std::)?mem(?:cpy|move|set)\s*\(\s*(?:&\s*)?$pointer\b(?:\s*\[[^\]]*\]|\s*[+\-][^,]*)?" })
+        $patterns.Add(@{ Kind = 'std copy'; Regex = "\bstd::(?:(?:ranges)::)?copy(?:_n)?\s*\([^;]*\b$pointer\b[^;]*\)" })
+        $patterns.Add(@{ Kind = 'std transform/fill'; Regex = "\bstd::(?:(?:ranges)::)?(?:transform|fill(?:_n)?)\s*\([^;]*\b$pointer\b[^;]*\)" })
+        $patterns.Add(@{ Kind = 'derived output pointer escape'; Regex = "\b[A-Za-z_]\w*\s*\([^;)]*(?:&\s*$pointer\s*\[[^\]]*\]|\b$pointer\s*[+\-][^,)]*)" })
+    }
     if ($IncludeCount) { $patterns += @{ Kind = 'count write'; Regex = '\*\s*pCount\s*(?:[+\-*/%]?=|\+\+|--)' } }
     foreach ($entry in $patterns) {
         foreach ($match in [regex]::Matches($clean, $entry.Regex)) {
@@ -375,15 +417,37 @@ function Assert-CopyOutContract {
     Add-Result $analysis.CapacitySafe $Scope "$FunctionName rejects insufficient capacity before any caller-buffer data write and never reports partial success" $analysis.Detail
 }
 
+function Get-ExistingValidityBitAnalysis {
+    param([string]$Source)
+    $body = Get-CppNamedBody $Source 'lsfg_interposer_bridge_get_snapshot_v2'
+    if ($null -eq $body) {
+        return [pscustomobject]@{ Core = $false; Queue = $false; Swapchain = $false; Images = $false; Surface = $false; Present = $false; All = $false }
+    }
+    $clean = Remove-CppTrivia $body
+    $checks = [ordered]@{
+        Core = Test-Pattern $clean 'hostSnapshot\s*\.\s*device\s*=[\s\S]{0,500}?hostSnapshot\s*\.\s*validMask\s*\|=\s*0x01(?:u|U)?\s*;'
+        Queue = Test-Pattern $clean 'hostSnapshot\s*\.\s*presentQueue\s*=[\s\S]{0,700}?hostSnapshot\s*\.\s*validMask\s*\|=\s*0x02(?:u|U)?\s*;'
+        Swapchain = Test-Pattern $clean 'hostSnapshot\s*\.\s*swapchain\s*=[\s\S]{0,2200}?hostSnapshot\s*\.\s*validMask\s*\|=\s*0x04(?:u|U)?\s*;'
+        Images = Test-Pattern $clean 'hasImages[\s\S]{0,700}?hostSnapshot\s*\.\s*validMask\s*\|=\s*0x08(?:u|U)?\s*;'
+        Surface = Test-Pattern $clean 'hasSurfaceCapabilities[\s\S]{0,500}?hostSnapshot\s*\.\s*validMask\s*\|=\s*0x10(?:u|U)?\s*;'
+        Present = Test-Pattern $clean 'hasPresentModes[\s\S]{0,800}?hostSnapshot\s*\.\s*validMask\s*\|=\s*0x20(?:u|U)?\s*;'
+    }
+    return [pscustomobject]@{
+        Core = $checks.Core; Queue = $checks.Queue; Swapchain = $checks.Swapchain
+        Images = $checks.Images; Surface = $checks.Surface; Present = $checks.Present
+        All = -not ($checks.Values -contains $false)
+    }
+}
+
 function Assert-ExistingValidityBits {
     param([string]$Source, [string]$Scope)
+    $analysis = Get-ExistingValidityBitAnalysis $Source
     foreach ($entry in @(
-        @{ Bit = '0x01'; Word = 'Core'; Meaning = 'core handles' }, @{ Bit = '0x02'; Word = 'Queue'; Meaning = 'queue' },
-        @{ Bit = '0x04'; Word = 'Swapchain'; Meaning = 'swapchain' }, @{ Bit = '0x08'; Word = 'Images'; Meaning = 'images' },
-        @{ Bit = '0x10'; Word = 'Surface'; Meaning = 'surface capabilities' }, @{ Bit = '0x20'; Word = 'Present'; Meaning = 'present modes' }
+        @{ Property = 'Core'; Bit = '0x01'; Meaning = 'core handles' }, @{ Property = 'Queue'; Bit = '0x02'; Meaning = 'queue' },
+        @{ Property = 'Swapchain'; Bit = '0x04'; Meaning = 'swapchain' }, @{ Property = 'Images'; Bit = '0x08'; Meaning = 'images' },
+        @{ Property = 'Surface'; Bit = '0x10'; Meaning = 'surface capabilities' }, @{ Property = 'Present'; Bit = '0x20'; Meaning = 'present modes' }
     )) {
-        $pattern = "validMask\s*\|=\s*$([regex]::Escape($entry.Bit))(?:u|U)?\s*;[^`r`n]*$($entry.Word)"
-        Add-Result (Test-Pattern $Source $pattern) $Scope "existing validity bit $($entry.Bit) remains assigned to $($entry.Meaning)" 'the pre-existing V2 validity-bit mapping changed or disappeared'
+        Add-Result ([bool]$analysis.($entry.Property)) $Scope "existing validity bit $($entry.Bit) remains assigned in code to $($entry.Meaning)" 'the uncommented pre-existing V2 validity-bit mapping changed or disappeared'
     }
 }
 
@@ -400,7 +464,82 @@ function Assert-StructSizeBoundedSnapshotCopy {
 
 function Get-V2A1PathFunctions {
     param([string]$Source)
-    return @(Get-CppFunctionInfos $Source | Where-Object { $_.Name -match '(?i)(v2a1|v2a_snapshot|metadata.*(?:worker|probe)|snapshot.*(?:worker|probe))' })
+    $functions = @(Get-CppFunctionInfos $Source)
+    $byName = @{}
+    foreach ($function in $functions) { $byName[$function.Name] = $function }
+    $pending = [System.Collections.Generic.Queue[string]]::new()
+    foreach ($root in $functions | Where-Object { $_.Name -match '(?i)(v2a1|v2a_snapshot|metadata.*(?:worker|probe)|snapshot.*(?:worker|probe))' }) {
+        $pending.Enqueue($root.Name)
+    }
+    $visited = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    $closure = [System.Collections.Generic.List[object]]::new()
+    while ($pending.Count -gt 0) {
+        $name = $pending.Dequeue()
+        if (-not $visited.Add($name) -or -not $byName.ContainsKey($name)) { continue }
+        $function = $byName[$name]
+        $closure.Add($function)
+        foreach ($candidate in $functions) {
+            if (-not $visited.Contains($candidate.Name) -and (Test-Pattern $function.CleanBody "\b$([regex]::Escape($candidate.Name))\s*\(")) {
+                $pending.Enqueue($candidate.Name)
+            }
+        }
+    }
+    return @($closure)
+}
+
+function Get-ConsumerWorkerArrangement {
+    param([string]$Source)
+    $functions = @(Get-CppFunctionInfos $Source)
+    $workers = @($functions | Where-Object Name -match '(?i)(?:v2a1|metadata).*(?:worker)|(?:worker).*(?:v2a1|metadata)')
+    $launchSites = [System.Collections.Generic.List[object]]::new()
+    foreach ($worker in $workers) {
+        foreach ($function in $functions) {
+            if (Test-Pattern $function.CleanBody "std::thread[\s\S]{0,240}?\b$([regex]::Escape($worker.Name))\b") {
+                $launchSites.Add([pscustomobject]@{ Worker = $worker; Function = $function })
+            }
+        }
+    }
+    $launchAndOneShot = $false
+    $initTied = $false
+    foreach ($site in $launchSites) {
+        $body = $site.Function.CleanBody
+        $oneShot = Test-Pattern $body '(?i)(?:v2a1|metadata)[A-Za-z0-9_]*(?:worker|started)[A-Za-z0-9_]*\s*\.\s*exchange\s*\(\s*true\s*\)'
+        if ($oneShot) { $launchAndOneShot = $true }
+        $initEvidence = $site.Function.Name -match '(?i)(init|initializ|discover|export|bridge)' -or (Test-Pattern $body '(?i)(dlsym|VULKAN_PTR|interposer_handle|bridge_get_snapshot|export discovered)')
+        $everyFrameRoots = @($functions | Where-Object {
+            $_.Name -match '(?i)(frame|render|tick|present|acquire|callback|observer)' -or
+            (Test-Pattern $_.CleanBody '\b(?:vkQueuePresentKHR|pPresentInfo|frameSerial|renderFrame)\b')
+        })
+        $pending = [System.Collections.Generic.Queue[object]]::new()
+        foreach ($root in $everyFrameRoots) { $pending.Enqueue($root) }
+        $visited = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+        $everyFrameEvidence = $false
+        while ($pending.Count -gt 0 -and -not $everyFrameEvidence) {
+            $current = $pending.Dequeue()
+            if (-not $visited.Add($current.Name)) { continue }
+            if ($current.Name -eq $site.Function.Name) { $everyFrameEvidence = $true; break }
+            foreach ($candidate in $functions) {
+                if (-not $visited.Contains($candidate.Name) -and (Test-Pattern $current.CleanBody "\b$([regex]::Escape($candidate.Name))\s*\(")) {
+                    $pending.Enqueue($candidate)
+                }
+            }
+        }
+        if ($oneShot -and $initEvidence -and -not $everyFrameEvidence) { $initTied = $true }
+    }
+    return [pscustomobject]@{
+        Workers = $workers
+        LaunchSites = @($launchSites)
+        LaunchAndOneShot = $launchAndOneShot
+        InitializationTied = $initTied
+    }
+}
+
+function Test-NewQueueValidityBit {
+    param([string]$Source)
+    $clean = Remove-CppTrivia $Source
+    return (Test-Pattern $clean '(?:queueFamilyFlags|queueFamilyQueueCount)[\s\S]{0,1200}?validMask\s*\|=\s*0x40(?:u|U)?\s*;') -or
+        (Test-Pattern $clean 'validMask\s*&\s*0x40(?:u|U)?[\s\S]{0,1200}?(?:queueFamilyFlags|queueFamilyQueueCount)') -or
+        (Test-Pattern $clean 'LSFG_BRIDGE_VALID_[A-Za-z0-9_]*QUEUE[A-Za-z0-9_]*\s*=\s*0x40(?:u|U)?')
 }
 
 function Find-PassivePathViolations {
@@ -426,17 +565,17 @@ function Find-PassivePathViolations {
 
 function Assert-ConsumerWorkerAndPassivePath {
     param([string]$Source, [string]$Scope)
-    $functions = @(Get-CppFunctionInfos $Source)
-    $worker = @($functions | Where-Object Name -match '(?i)(?:v2a1|metadata).*(?:worker)|(?:worker).*(?:v2a1|metadata)' | Select-Object -First 1)
+    $arrangement = Get-ConsumerWorkerArrangement $Source
+    $worker = @($arrangement.Workers | Select-Object -First 1)
     $workerExists = $worker.Count -eq 1
     Add-Result $workerExists $Scope 'consumer defines a dedicated short-lived V2A.1 initialization worker' 'no V2A.1/metadata worker function was found'
     if ($workerExists) {
-        $launch = Test-Pattern $Source "std::thread[\s\S]{0,240}?\b$([regex]::Escape($worker[0].Name))\b"
-        $oneShot = Test-Pattern (Remove-CppTrivia $Source) '(?:v2a1|metadata)[A-Za-z0-9_]*(?:worker|started)[A-Za-z0-9_]*\s*\.\s*exchange\s*\(\s*true\s*\)'
-        Add-Result ($launch -and $oneShot) $Scope 'consumer starts the V2A.1 worker once behind an atomic one-shot gate' 'thread launch or atomic worker-start exchange is absent'
+        Add-Result $arrangement.LaunchAndOneShot $Scope 'consumer starts the V2A.1 worker once behind an atomic one-shot gate in the same launch path' 'thread launch and atomic worker-start exchange are not tied together'
+        Add-Result $arrangement.InitializationTied $Scope 'V2A.1 worker launch is tied to initialization/export discovery and excluded from every-frame paths' 'worker launch is absent from initialization/export discovery or appears in frame/present/render code'
         Add-Result (Test-Pattern $worker[0].CleanBody 'for\s*\([^;]*;[^;]*<\s*3\s*;') $Scope 'worker bounds complete stale-retry sequences to at most three attempts' 'the worker lacks a literal three-attempt bound'
     } else {
-        Add-Result $false $Scope 'consumer starts the V2A.1 worker once behind an atomic one-shot gate' 'worker is absent'
+        Add-Result $false $Scope 'consumer starts the V2A.1 worker once behind an atomic one-shot gate in the same launch path' 'worker is absent'
+        Add-Result $false $Scope 'V2A.1 worker launch is tied to initialization/export discovery and excluded from every-frame paths' 'worker is absent'
         Add-Result $false $Scope 'worker bounds complete stale-retry sequences to at most three attempts' 'worker is absent'
     }
     $callback = Get-CppNamedBody $Source 'lsfg_present_observer_callback_v1'
@@ -469,6 +608,18 @@ void bad_ctad() { std::lock_guard lock(g_stateMutex); cachedPresent(queue, info)
 struct DeviceState { PFN_vkQueuePresentKHR queuePresent; };
 void bad_manual_alias() { auto cachedCall = state.queuePresent; g_stateMutex.lock(); cachedCall(queue, info); g_stateMutex.unlock(); }
 '@
+    $lockDirectInitAlias = @'
+struct DeviceState { PFN_vkQueuePresentKHR queuePresent; };
+void bad_direct_init_alias() { auto cachedCall{state.queuePresent}; std::lock_guard lock(g_stateMutex); cachedCall(queue, info); }
+'@
+    $lockStandardAttribute = @'
+PFN_vkQueuePresentKHR cachedPresent;
+[[gnu::visibility("default")]] void bad_standard_attribute() { std::lock_guard lock(g_stateMutex); cachedPresent(queue, info); }
+'@
+    $lockUnparsedScope = @'
+PFN_vkQueuePresentKHR cachedPresent;
+auto unparsedLambda = [] { std::lock_guard lock(g_stateMutex); cachedPresent(queue, info); };
+'@
     $lockSafe = @'
 PFN_vkQueuePresentKHR cachedPresent;
 void safe_call() { { std::lock_guard<std::mutex> lock{g_stateMutex}; state = 1; } cachedPresent(queue, info); }
@@ -476,11 +627,15 @@ void safe_call() { { std::lock_guard<std::mutex> lock{g_stateMutex}; state = 1; 
     Assert-SelfCheck (@(Find-RealVulkanCallsUnderStateMutex $lockTemplateBrace).Count -gt 0) 'lock audit rejects template brace-init lock_guard call'
     Assert-SelfCheck (@(Find-RealVulkanCallsUnderStateMutex $lockCtad).Count -gt 0) 'lock audit rejects CTAD lock_guard call'
     Assert-SelfCheck (@(Find-RealVulkanCallsUnderStateMutex $lockManualAlias).Count -gt 0) 'lock audit rejects manual lock cached-PFN alias call'
+    Assert-SelfCheck (@(Find-RealVulkanCallsUnderStateMutex $lockDirectInitAlias).Count -gt 0) 'lock audit rejects direct-init cached-PFN alias call'
+    Assert-SelfCheck (@(Find-RealVulkanCallsUnderStateMutex $lockStandardAttribute).Count -gt 0) 'lock audit parses standard-attributed function and rejects locked PFN call'
+    Assert-SelfCheck (@(Find-RealVulkanCallsUnderStateMutex $lockUnparsedScope).Count -gt 0) 'lock audit conservatively rejects unparsed scope containing g_stateMutex'
     Assert-SelfCheck (@(Find-RealVulkanCallsUnderStateMutex $lockSafe).Count -eq 0) 'lock audit accepts real Vulkan call after lock closes'
     foreach ($fixture in @(
         @{ Text = 'memcpy(pModes, cached.data(), bytes);'; Kind = 'memcpy/memmove' },
         @{ Text = 'std::copy(cached.begin(), cached.end(), pModes);'; Kind = 'std copy' },
-        @{ Text = '*pModes++ = mode;'; Kind = 'pointer write' }
+        @{ Text = '*pModes++ = mode;'; Kind = 'pointer write' },
+        @{ Text = 'memcpy(&pModes[0], cached.data(), bytes);'; Kind = 'memcpy/memmove' }
     )) {
         $writes = @(Get-CallerOutputWrites $fixture.Text 'pModes')
         Assert-SelfCheck (@($writes | Where-Object Kind -eq $fixture.Kind).Count -gt 0) "output audit detects $($fixture.Kind)"
@@ -499,10 +654,18 @@ int32_t copy_modes(uint64_t expectedGeneration, uint32_t *pCount, VkPresentModeK
  if (expectedGeneration != generation) { return -4; } return 0;
 }
 '@
+    $badAddressCopy = @'
+int32_t copy_modes(uint64_t expectedGeneration, uint32_t *pCount, VkPresentModeKHR *pModes) {
+ std::lock_guard lock(g_stateMutex); memcpy(&pModes[0], cachedModes.data(), bytes);
+ if (expectedGeneration != generation) { return -4; } if (*pCount < required) { return -5; } return 0;
+}
+'@
     $goodAnalysis = Get-CopyOutAnalysis $goodCopy 'copy_modes' 'pModes'
     $badAnalysis = Get-CopyOutAnalysis $badCopy 'copy_modes' 'pModes'
+    $badAddressAnalysis = Get-CopyOutAnalysis $badAddressCopy 'copy_modes' 'pModes'
     Assert-SelfCheck ($goodAnalysis.StaleDominates -and $goodAnalysis.Coherent -and $goodAnalysis.CapacitySafe) 'copy-out audit accepts coherent locked non-partial copy'
     Assert-SelfCheck (-not $badAnalysis.StaleDominates) 'copy-out audit rejects caller write before stale check'
+    Assert-SelfCheck (-not $badAddressAnalysis.StaleDominates) 'copy-out audit rejects &pModes[0] destination before stale check'
     $abiGood = @'
 struct LsfgBridgeSnapshotV2 {
 uint32_t abiVersion; uint32_t structSize; uint64_t generation; VkInstance instance; VkPhysicalDevice physicalDevice; VkDevice device;
@@ -517,19 +680,52 @@ VkPresentModeKHR supportedPresentModes[LSFG_BRIDGE_MAX_PRESENT_MODES]; uint32_t 
     $abiBad = $abiGood.Replace('VkFormat imageFormat;', 'uint32_t insertedField; VkFormat imageFormat;')
     Assert-SelfCheck ((Test-V2AbiLayout $abiGood).Append) 'ABI audit accepts exact append-only layout'
     Assert-SelfCheck (-not (Test-V2AbiLayout $abiBad).Prefix) 'ABI audit rejects insertion into old V2 prefix'
+    $validityGood = @'
+int32_t lsfg_interposer_bridge_get_snapshot_v2(LsfgBridgeSnapshotV2 *outSnapshot) {
+ hostSnapshot.device = dev; hostSnapshot.validMask |= 0x01;
+ hostSnapshot.presentQueue = queue; hostSnapshot.validMask |= 0x02;
+ hostSnapshot.swapchain = swapchain; hostSnapshot.validMask |= 0x04;
+ if (pMeta->hasImages) { hostSnapshot.validMask |= 0x08; }
+ if (pMeta->hasSurfaceCapabilities) { hostSnapshot.validMask |= 0x10; }
+ if (pMeta->hasPresentModes) { hostSnapshot.validMask |= 0x20; }
+ return 0;
+}
+'@
+    $validityCommentsOnly = @'
+int32_t lsfg_interposer_bridge_get_snapshot_v2(LsfgBridgeSnapshotV2 *outSnapshot) {
+ // hostSnapshot.device = dev; hostSnapshot.validMask |= 0x01;
+ // hostSnapshot.presentQueue = queue; hostSnapshot.validMask |= 0x02;
+ // hostSnapshot.swapchain = swapchain; hostSnapshot.validMask |= 0x04;
+ // hasImages hostSnapshot.validMask |= 0x08; hasSurfaceCapabilities hostSnapshot.validMask |= 0x10;
+ // hasPresentModes hostSnapshot.validMask |= 0x20;
+ return 0;
+}
+'@
+    $validityChanged = $validityGood.Replace('hostSnapshot.validMask |= 0x02;', 'hostSnapshot.validMask |= 0x04;')
+    Assert-SelfCheck (Get-ExistingValidityBitAnalysis $validityGood).All 'validity audit accepts exact uncommented old-bit mappings'
+    Assert-SelfCheck (-not (Get-ExistingValidityBitAnalysis $validityCommentsOnly).All) 'validity audit rejects comment-only mappings'
+    Assert-SelfCheck (-not (Get-ExistingValidityBitAnalysis $validityChanged).Queue) 'validity audit rejects changed actual old queue bit'
     $passiveBad = 'void v2a1_metadata_worker() { vkQueueSubmit(queue, 1, submits, fence); }'
     $passiveCachedBad = 'PFN_vkQueuePresentKHR cachedPresent; void v2a1_metadata_worker() { cachedPresent(queue, info); }'
+    $passiveHelperBad = 'void active_helper() { vkQueueSubmit(queue, 1, submits, fence); } void v2a1_metadata_worker() { active_helper(); }'
     $passiveOutside = 'void v2a1_metadata_worker() { query_metadata(); } void lsfg_vkQueuePresentKHR() { vkQueuePresentKHR(queue, info); }'
+    $initWorkerGood = 'std::atomic<bool> g_v2a1WorkerStarted; void v2a1_metadata_worker() {} void discover_bridge_exports() { if (!g_v2a1WorkerStarted.exchange(true)) { std::thread worker(v2a1_metadata_worker); } }'
+    $everyFrameWorkerBad = 'std::atomic<bool> g_v2a1WorkerStarted; void v2a1_metadata_worker() {} void render_frame() { if (!g_v2a1WorkerStarted.exchange(true)) { std::thread worker(v2a1_metadata_worker); } }'
+    $indirectEveryFrameWorkerBad = 'std::atomic<bool> g_v2a1WorkerStarted; void v2a1_metadata_worker() {} void initialize_metadata() { if (!g_v2a1WorkerStarted.exchange(true)) { std::thread worker(v2a1_metadata_worker); } } void render_frame() { initialize_metadata(); }'
     Assert-SelfCheck (@(Find-PassivePathViolations $passiveBad).Count -gt 0) 'passive audit rejects active Vulkan operation in V2A.1 path'
     Assert-SelfCheck (@(Find-PassivePathViolations $passiveCachedBad).Count -gt 0) 'passive audit rejects cached Vulkan PFN in V2A.1 path'
+    Assert-SelfCheck (@(Find-PassivePathViolations $passiveHelperBad).Count -gt 0) 'passive audit transitively rejects active helper called by worker'
     Assert-SelfCheck (@(Find-PassivePathViolations $passiveOutside).Count -eq 0) 'passive audit ignores existing wrapper outside V2A.1 path'
+    Assert-SelfCheck (Get-ConsumerWorkerArrangement $initWorkerGood).InitializationTied 'worker audit accepts one-shot launch in export-discovery path'
+    Assert-SelfCheck (-not (Get-ConsumerWorkerArrangement $everyFrameWorkerBad).InitializationTied) 'worker audit rejects one-shot launch from every-frame path'
+    Assert-SelfCheck (-not (Get-ConsumerWorkerArrangement $indirectEveryFrameWorkerBad).InitializationTied) 'worker audit rejects indirect every-frame reachability into init-named launcher'
 }
 
 function Invoke-ProducerChecks {
     $scope = 'producer'; $source = Read-RequiredSource $ProducerPath
     Assert-V2AbiLayout $source $scope
     Assert-ExistingValidityBits $source $scope
-    Assert-Pattern $source 'validMask\s*\|=\s*0x40(?:u|U)?\s*;[^\r\n]*(?:queue|Queue)' $scope 'new queue-family capability validity bit is append-only value 0x40'
+    Add-Result (Test-NewQueueValidityBit $source) $scope 'new queue-family capability validity bit is semantically tied to queue fields at code value 0x40' 'no uncommented queue-field/0x40 mapping was found'
     Assert-StructSizeBoundedSnapshotCopy $source $scope
     Assert-ExactPresentModesSignature $source $scope
     $metadataBody = Get-CppStructBody $source 'SwapchainMetadata'
@@ -548,7 +744,7 @@ function Assert-ConsumerContract {
     Assert-ExactPresentModesSignature $source $Scope
     Assert-Pattern $clean 'PFN_lsfg_interposer_bridge_get_swapchain_images_v2[\s\S]{0,300}?uint64_t\s+expectedGeneration[\s\S]{0,300}?VkImage\s*\*\s*pImages' $Scope 'consumer declares the generation-safe swapchain-image copy-out ABI'
     Assert-Pattern $clean 'PFN_lsfg_interposer_bridge_get_present_modes_v2[\s\S]{0,300}?uint64_t\s+expectedGeneration[\s\S]{0,300}?VkPresentModeKHR\s*\*\s*pModes' $Scope 'consumer declares the exact generation-safe present-mode copy-out ABI'
-    Assert-Pattern $source '(?:validMask\s*&\s*0x40|LSFG_BRIDGE_VALID_[A-Za-z0-9_]*QUEUE[A-Za-z0-9_]*\s*=\s*0x40)' $Scope 'consumer mirrors the new queue-family validity bit at append-only value 0x40'
+    Add-Result (Test-NewQueueValidityBit $source) $Scope 'consumer mirrors queue-family validity bit 0x40 in uncommented queue-field code' 'no uncommented queue-field/0x40 mapping was found'
     Assert-ConsumerWorkerAndPassivePath $source $Scope
     Assert-Pattern $source '\[LSFG-V2A1\]' $Scope 'consumer emits the required one-shot [LSFG-V2A1] diagnostic label'
     Assert-Pattern $clean '(?:v2a1|metadata|snapshot)[A-Za-z0-9_]*\s*\.\s*exchange\s*\(\s*true\s*\)' $Scope 'consumer guards the V2A.1 diagnostic with one-shot atomic exchange'
@@ -577,7 +773,7 @@ try {
     if ($Stage -in @('producer', 'full')) { Invoke-ProducerChecks }
     if ($Stage -in @('consumer', 'full')) { Invoke-ConsumerChecks }
 } catch {
-    Write-Error "Contract test infrastructure error: $($_.Exception.Message)"
+    [Console]::Error.WriteLine("Contract test infrastructure error: $($_.Exception.Message)")
     exit 2
 }
 Write-Output "SUMMARY checks=$script:Checks failures=$($script:Failures.Count)"
