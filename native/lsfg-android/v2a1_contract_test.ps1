@@ -151,6 +151,21 @@ function Get-CppControlScopeIntervals {
             $intervals.Add([pscustomobject]@{ Start = $control.Index; OpenBrace = $cursor; End = $closeBrace; Kind = $control.Groups['kind'].Value })
         }
     }
+    foreach ($elseMatch in [regex]::Matches($TriviaFreeSource, '\belse\b')) {
+        $cursor = $elseMatch.Index + $elseMatch.Length
+        while ($cursor -lt $TriviaFreeSource.Length -and [char]::IsWhiteSpace($TriviaFreeSource[$cursor])) { $cursor++ }
+        if ($cursor -lt $TriviaFreeSource.Length -and $TriviaFreeSource[$cursor] -eq '{') {
+            $closeBrace = Get-MatchingBraceIndex $TriviaFreeSource $cursor
+            if ($closeBrace -ge 0) {
+                $intervals.Add([pscustomobject]@{ Start = $elseMatch.Index; OpenBrace = $cursor; End = $closeBrace; Kind = 'else' })
+            }
+        } elseif ($cursor -lt $TriviaFreeSource.Length) {
+            $statementEnd = $TriviaFreeSource.IndexOf(';', $cursor)
+            if ($statementEnd -ge 0) {
+                $intervals.Add([pscustomobject]@{ Start = $elseMatch.Index; OpenBrace = $cursor; End = $statementEnd; Kind = 'else' })
+            }
+        }
+    }
     return @($intervals)
 }
 
@@ -163,7 +178,7 @@ function Test-CppGuardDominatesWrites {
     }
     $prefixStart = [Math]::Max(0, $Guard.Index - 500)
     $prefix = $TriviaFreeSource.Substring($prefixStart, $Guard.Index - $prefixStart)
-    if (Test-Pattern $prefix '\b(?:if|for|while|switch)\s*\([^;{}]*\)\s*$') { return $false }
+    if (Test-Pattern $prefix '(?:\b(?:if|for|while|switch)\s*\([^;{}]*\)|\belse)\s*$') { return $false }
     return $true
 }
 
@@ -402,7 +417,7 @@ function Get-CallerOutputWrites {
                 }
             }
         }
-        foreach ($assignment in [regex]::Matches($clean, '\b(?:(?:const|volatile)\s+)*(?:auto|[A-Za-z_]\w*(?:::\w+)*(?:\s*\*)?)(?:\s+(?:const|volatile))*\s+(?<lhs>[A-Za-z_]\w*)\s*=\s*std::(?:(?:ranges)::)?(?:next|prev)\s*\(\s*(?<rhs>[A-Za-z_]\w*)\b[^;]*;')) {
+        foreach ($assignment in [regex]::Matches($clean, '\b(?:(?:const|volatile)\s+)*(?:auto|[A-Za-z_]\w*(?:::\w+)*(?:\s*\*)?)(?:\s+(?:const|volatile))*\s+(?<lhs>[A-Za-z_]\w*)\s*(?:=|\{|\()\s*std::(?:(?:ranges)::)?(?:next|prev)\s*\(\s*(?<rhs>[A-Za-z_]\w*)\b[^;]*;')) {
             if ($pointerAliases.Contains($assignment.Groups['rhs'].Value) -and $pointerAliases.Add($assignment.Groups['lhs'].Value)) { $changed = $true }
         }
     }
@@ -602,7 +617,7 @@ function Get-ConsumerWorkerArrangement {
     })
     $initReachable = @(Get-CppReachableFunctions $functions @($initRoots | ForEach-Object Name))
     $everyFrameRoots = @($functions | Where-Object {
-        $_.Name -match '(?i)(update|step|loop|render|frame|tick|callback|present|^on_)' -or
+        $_.Name -match '(?i)(update|step|loop|render|frame|tick|acquire|observer|callback|present|^on_)' -or
         (Test-Pattern $_.CleanBody '\b(?:vkQueuePresentKHR|pPresentInfo|frameSerial|renderFrame)\b')
     })
     $everyFrameReachable = @(Get-CppReachableFunctions $functions @($everyFrameRoots | ForEach-Object Name))
@@ -758,7 +773,8 @@ void safe_call() { { std::lock_guard<std::mutex> lock{g_stateMutex}; state = 1; 
         @{ Text = '*pModes++ = mode;'; Kind = 'pointer write' },
         @{ Text = 'memcpy(&pModes[0], cached.data(), bytes);'; Kind = 'memcpy/memmove' },
         @{ Text = '*std::next(pModes) = mode;'; Kind = 'iterator write' },
-        @{ Text = 'auto const out = std::next(pModes, 1); *out = mode;'; Kind = 'pointer write' }
+        @{ Text = 'auto const out = std::next(pModes, 1); *out = mode;'; Kind = 'pointer write' },
+        @{ Text = 'auto const out{std::next(pModes, 1)}; *out = mode;'; Kind = 'pointer write' }
     )) {
         $writes = @(Get-CallerOutputWrites $fixture.Text 'pModes')
         Assert-SelfCheck (@($writes | Where-Object Kind -eq $fixture.Kind).Count -gt 0) "output audit detects $($fixture.Kind)"
@@ -796,16 +812,33 @@ int32_t copy_modes(uint64_t expectedGeneration, uint32_t *pCount, VkPresentModeK
  std::copy(cachedModes.begin(), cachedModes.end(), pModes); return 0;
 }
 '@
+    $elseStaleCopy = @'
+int32_t copy_modes(uint64_t expectedGeneration, uint32_t *pCount, VkPresentModeKHR *pModes) {
+ std::lock_guard lock(g_stateMutex); if (skipValidation) { observe(); } else { if (expectedGeneration != generation) { return -4; } }
+ uint32_t required = cachedModes.size(); if (*pCount < required) { return -5; } std::copy(cachedModes.begin(), cachedModes.end(), pModes); return 0;
+}
+'@
+    $elseCapacityCopy = @'
+int32_t copy_modes(uint64_t expectedGeneration, uint32_t *pCount, VkPresentModeKHR *pModes) {
+ std::lock_guard lock(g_stateMutex); if (expectedGeneration != generation) { return -4; }
+ uint32_t required = cachedModes.size(); if (skipCapacity) { observe(); } else { if (*pCount < required) { return -5; } }
+ std::copy(cachedModes.begin(), cachedModes.end(), pModes); return 0;
+}
+'@
     $goodAnalysis = Get-CopyOutAnalysis $goodCopy 'copy_modes' 'pModes'
     $badAnalysis = Get-CopyOutAnalysis $badCopy 'copy_modes' 'pModes'
     $badAddressAnalysis = Get-CopyOutAnalysis $badAddressCopy 'copy_modes' 'pModes'
     $conditionalStaleAnalysis = Get-CopyOutAnalysis $conditionalStaleCopy 'copy_modes' 'pModes'
     $conditionalCapacityAnalysis = Get-CopyOutAnalysis $conditionalCapacityCopy 'copy_modes' 'pModes'
+    $elseStaleAnalysis = Get-CopyOutAnalysis $elseStaleCopy 'copy_modes' 'pModes'
+    $elseCapacityAnalysis = Get-CopyOutAnalysis $elseCapacityCopy 'copy_modes' 'pModes'
     Assert-SelfCheck ($goodAnalysis.StaleDominates -and $goodAnalysis.Coherent -and $goodAnalysis.CapacitySafe) 'copy-out audit accepts coherent locked non-partial copy'
     Assert-SelfCheck (-not $badAnalysis.StaleDominates) 'copy-out audit rejects caller write before stale check'
     Assert-SelfCheck (-not $badAddressAnalysis.StaleDominates) 'copy-out audit rejects &pModes[0] destination before stale check'
     Assert-SelfCheck (-not $conditionalStaleAnalysis.StaleDominates) 'copy-out audit rejects stale guard nested in an optional branch'
     Assert-SelfCheck (-not $conditionalCapacityAnalysis.CapacitySafe) 'copy-out audit rejects capacity guard nested in an optional branch'
+    Assert-SelfCheck (-not $elseStaleAnalysis.StaleDominates) 'copy-out audit rejects stale guard nested in else branch'
+    Assert-SelfCheck (-not $elseCapacityAnalysis.CapacitySafe) 'copy-out audit rejects capacity guard nested in else branch'
     $abiGood = @'
 struct LsfgBridgeSnapshotV2 {
 uint32_t abiVersion; uint32_t structSize; uint64_t generation; VkInstance instance; VkPhysicalDevice physicalDevice; VkDevice device;
@@ -857,6 +890,8 @@ int32_t lsfg_interposer_bridge_get_snapshot_v2(LsfgBridgeSnapshotV2 *outSnapshot
     $everyFrameWorkerBad = 'std::atomic<bool> g_v2a1WorkerStarted; void v2a1_metadata_worker() {} void render_frame() { if (!g_v2a1WorkerStarted.exchange(true)) { std::thread worker(v2a1_metadata_worker); } }'
     $indirectEveryFrameWorkerBad = 'std::atomic<bool> g_v2a1WorkerStarted; void v2a1_metadata_worker() {} void initialize_metadata() { if (!g_v2a1WorkerStarted.exchange(true)) { std::thread worker(v2a1_metadata_worker); } } void render_frame() { initialize_metadata(); }'
     $updateWorkerBad = 'std::atomic<bool> g_v2a1WorkerStarted; void v2a1_metadata_worker() {} void initialize_metadata() { if (!g_v2a1WorkerStarted.exchange(true)) { std::thread worker(v2a1_metadata_worker); } } void update() { initialize_metadata(); }'
+    $acquireWorkerBad = 'std::atomic<bool> g_v2a1WorkerStarted; void v2a1_metadata_worker() {} void initialize_metadata() { if (!g_v2a1WorkerStarted.exchange(true)) { std::thread worker(v2a1_metadata_worker); } } void acquire_next_image() { initialize_metadata(); }'
+    $observerWorkerBad = 'std::atomic<bool> g_v2a1WorkerStarted; void v2a1_metadata_worker() {} void initialize_metadata() { if (!g_v2a1WorkerStarted.exchange(true)) { std::thread worker(v2a1_metadata_worker); } } void metadata_observer() { initialize_metadata(); }'
     $splitGateWorkerBad = 'std::atomic<bool> g_v2a1WorkerStarted; void v2a1_metadata_worker() {} void discover_bridge_exports() { std::thread worker(v2a1_metadata_worker); } void unrelated_once() { g_v2a1WorkerStarted.exchange(true); }'
     Assert-SelfCheck (@(Find-PassivePathViolations $passiveBad).Count -gt 0) 'passive audit rejects active Vulkan operation in V2A.1 path'
     Assert-SelfCheck (@(Find-PassivePathViolations $passiveCachedBad).Count -gt 0) 'passive audit rejects cached Vulkan PFN in V2A.1 path'
@@ -870,6 +905,8 @@ int32_t lsfg_interposer_bridge_get_snapshot_v2(LsfgBridgeSnapshotV2 *outSnapshot
     Assert-SelfCheck (-not (Get-ConsumerWorkerArrangement $everyFrameWorkerBad).InitializationTied) 'worker audit rejects one-shot launch from every-frame path'
     Assert-SelfCheck (-not (Get-ConsumerWorkerArrangement $indirectEveryFrameWorkerBad).InitializationTied) 'worker audit rejects indirect every-frame reachability into init-named launcher'
     Assert-SelfCheck (-not (Get-ConsumerWorkerArrangement $updateWorkerBad).InitializationTied) 'worker audit rejects update reachability into init-named launcher'
+    Assert-SelfCheck (-not (Get-ConsumerWorkerArrangement $acquireWorkerBad).InitializationTied) 'worker audit rejects acquire reachability into init-named launcher'
+    Assert-SelfCheck (-not (Get-ConsumerWorkerArrangement $observerWorkerBad).InitializationTied) 'worker audit rejects observer reachability into init-named launcher'
     Assert-SelfCheck (-not (Get-ConsumerWorkerArrangement $splitGateWorkerBad).LaunchAndOneShot) 'worker audit rejects file-wide one-shot gate detached from launch root'
 }
 
