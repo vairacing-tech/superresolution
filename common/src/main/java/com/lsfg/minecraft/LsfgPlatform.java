@@ -59,6 +59,11 @@ public final class LsfgPlatform {
             return false;
         }
 
+        String bridgeProp = System.getProperty("superresolution.lsfg_bridge_probe");
+        if (bridgeProp != null && (bridgeProp.equalsIgnoreCase("true") || bridgeProp.equals("1"))) {
+            return true;
+        }
+
         String prop = System.getProperty("superresolution.lsfg_probe");
         if (prop != null && (prop.equalsIgnoreCase("true") || prop.equals("1"))) {
             return true;

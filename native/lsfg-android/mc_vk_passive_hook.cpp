@@ -84,6 +84,52 @@ std::atomic<uint32_t> g_acquireNextImageCalls{0};
 std::atomic<uint32_t> g_acquireNextImage2Calls{0};
 std::atomic<uint32_t> g_queuePresentCalls{0};
 
+// Bridge definitions and atomics
+#define LSFG_BRIDGE_ACK_V1 0x4C534647 // 'LSFG'
+
+typedef uint32_t (*PFN_lsfg_present_observer_v1)(
+    uint64_t serial,
+    VkQueue queue,
+    const VkPresentInfoKHR *pPresentInfo,
+    void *user_data
+);
+
+typedef uint32_t (*PFN_lsfg_interposer_bridge_get_version)(void);
+typedef int32_t (*PFN_lsfg_interposer_register_present_observer_v1)(
+    PFN_lsfg_present_observer_v1 callback,
+    void *user_data
+);
+typedef int32_t (*PFN_lsfg_interposer_unregister_present_observer_v1)(
+    PFN_lsfg_present_observer_v1 callback
+);
+
+std::atomic<uint64_t> g_bridgeCallbackCount{0};
+std::atomic<uint64_t> g_bridgeLastSerial{0};
+std::atomic<bool> g_firstBridgeCallbackLogged{false};
+
+static uint32_t lsfg_present_observer_callback_v1(
+    uint64_t serial,
+    VkQueue queue,
+    const VkPresentInfoKHR *pPresentInfo,
+    void *user_data
+) {
+    (void)user_data;
+    g_vulkanObserved.store(true, std::memory_order_relaxed);
+    g_bridgeCallbackCount.fetch_add(1, std::memory_order_relaxed);
+    g_bridgeLastSerial.store(serial, std::memory_order_relaxed);
+
+    if (!g_firstBridgeCallbackLogged.exchange(true)) {
+        uint32_t scCount = (pPresentInfo != nullptr) ? pPresentInfo->swapchainCount : 0;
+        LOGI("[LSFG-BRIDGE] first present callback serial=%" PRIu64 " swapchains=%u",
+             serial, scCount);
+        printf("[LSFG-BRIDGE] first present callback serial=%" PRIu64 " swapchains=%u\n",
+             serial, scCount);
+        fflush(stdout);
+    }
+
+    return LSFG_BRIDGE_ACK_V1;
+}
+
 std::atomic<uintptr_t> g_lastInstance{0};
 std::atomic<uintptr_t> g_lastDevice{0};
 std::atomic<uintptr_t> g_lastQueue{0};
@@ -331,11 +377,53 @@ namespace lsfg_mc {
 
 void init_passive_vulkan_diagnostics() {
     ensure_real_vulkan_loaded();
+
+    // Discover and register with Amethyst Vulkan Interposer Bridge V1
+    const char *vulkanPtrEnv = std::getenv("VULKAN_PTR");
+    if (vulkanPtrEnv != nullptr && *vulkanPtrEnv != '\0') {
+        char *end = nullptr;
+        unsigned long ptrVal = std::strtoul(vulkanPtrEnv, &end, 16);
+        if (ptrVal != 0) {
+            void *interposer_handle = reinterpret_cast<void *>(ptrVal);
+            PFN_lsfg_interposer_bridge_get_version get_ver =
+                reinterpret_cast<PFN_lsfg_interposer_bridge_get_version>(
+                    dlsym(interposer_handle, "lsfg_interposer_bridge_get_version"));
+            if (get_ver != nullptr) {
+                uint32_t ver = get_ver();
+                if (ver == 1) {
+                    LOGI("[LSFG-BRIDGE] interposer bridge v1 discovered");
+                    printf("[LSFG-BRIDGE] interposer bridge v1 discovered\n");
+                    fflush(stdout);
+
+                    PFN_lsfg_interposer_register_present_observer_v1 reg_fn =
+                        reinterpret_cast<PFN_lsfg_interposer_register_present_observer_v1>(
+                            dlsym(interposer_handle, "lsfg_interposer_register_present_observer_v1"));
+                    if (reg_fn != nullptr) {
+                        int32_t reg_res = reg_fn(lsfg_present_observer_callback_v1, nullptr);
+                        if (reg_res == 0) {
+                            LOGI("[LSFG-BRIDGE] passive present observer registered");
+                            printf("[LSFG-BRIDGE] passive present observer registered\n");
+                            fflush(stdout);
+                        } else {
+                            LOGW("[LSFG-BRIDGE] observer registration returned %d", reg_res);
+                        }
+                    } else {
+                        LOGE("[LSFG-BRIDGE] Failed to dlsym lsfg_interposer_register_present_observer_v1");
+                    }
+                } else {
+                    LOGW("[LSFG-BRIDGE] Incompatible bridge version %u (expected 1)", ver);
+                }
+            } else {
+                LOGI("[LSFG-BRIDGE] Interposer handle %p does not export bridge API", interposer_handle);
+            }
+        }
+    }
+
     LOGI("[LSFG-PROBE] Passive Vulkan diagnostics layer armed. Interception mechanism: GIPA/GDPA export & VULKAN_PTR discovery.");
 }
 
 bool is_vulkan_observed() {
-    return g_vulkanObserved.load(std::memory_order_relaxed);
+    return g_vulkanObserved.load(std::memory_order_relaxed) || (g_bridgeCallbackCount.load(std::memory_order_relaxed) > 0);
 }
 
 ProbeStats get_probe_stats() {
