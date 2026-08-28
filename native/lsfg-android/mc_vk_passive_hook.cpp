@@ -209,6 +209,58 @@ static const char *present_mode_name(VkPresentModeKHR mode) {
     }
 }
 
+static const char *format_name(VkFormat format) {
+    switch (format) {
+        case VK_FORMAT_UNDEFINED: return "VK_FORMAT_UNDEFINED";
+        case VK_FORMAT_R8G8B8A8_UNORM: return "VK_FORMAT_R8G8B8A8_UNORM";
+        case VK_FORMAT_R8G8B8A8_SNORM: return "VK_FORMAT_R8G8B8A8_SNORM";
+        case VK_FORMAT_R8G8B8A8_USCALED: return "VK_FORMAT_R8G8B8A8_USCALED";
+        case VK_FORMAT_R8G8B8A8_SSCALED: return "VK_FORMAT_R8G8B8A8_SSCALED";
+        case VK_FORMAT_R8G8B8A8_UINT: return "VK_FORMAT_R8G8B8A8_UINT";
+        case VK_FORMAT_R8G8B8A8_SINT: return "VK_FORMAT_R8G8B8A8_SINT";
+        case VK_FORMAT_R8G8B8A8_SRGB: return "VK_FORMAT_R8G8B8A8_SRGB";
+        case VK_FORMAT_B8G8R8A8_UNORM: return "VK_FORMAT_B8G8R8A8_UNORM";
+        case VK_FORMAT_B8G8R8A8_SNORM: return "VK_FORMAT_B8G8R8A8_SNORM";
+        case VK_FORMAT_B8G8R8A8_USCALED: return "VK_FORMAT_B8G8R8A8_USCALED";
+        case VK_FORMAT_B8G8R8A8_SSCALED: return "VK_FORMAT_B8G8R8A8_SSCALED";
+        case VK_FORMAT_B8G8R8A8_UINT: return "VK_FORMAT_B8G8R8A8_UINT";
+        case VK_FORMAT_B8G8R8A8_SINT: return "VK_FORMAT_B8G8R8A8_SINT";
+        case VK_FORMAT_B8G8R8A8_SRGB: return "VK_FORMAT_B8G8R8A8_SRGB";
+        case VK_FORMAT_A8B8G8R8_UNORM_PACK32: return "VK_FORMAT_A8B8G8R8_UNORM_PACK32";
+        case VK_FORMAT_A8B8G8R8_SNORM_PACK32: return "VK_FORMAT_A8B8G8R8_SNORM_PACK32";
+        case VK_FORMAT_A8B8G8R8_USCALED_PACK32: return "VK_FORMAT_A8B8G8R8_USCALED_PACK32";
+        case VK_FORMAT_A8B8G8R8_SSCALED_PACK32: return "VK_FORMAT_A8B8G8R8_SSCALED_PACK32";
+        case VK_FORMAT_A8B8G8R8_UINT_PACK32: return "VK_FORMAT_A8B8G8R8_UINT_PACK32";
+        case VK_FORMAT_A8B8G8R8_SINT_PACK32: return "VK_FORMAT_A8B8G8R8_SINT_PACK32";
+        case VK_FORMAT_A8B8G8R8_SRGB_PACK32: return "VK_FORMAT_A8B8G8R8_SRGB_PACK32";
+        case VK_FORMAT_R16G16B16A16_SFLOAT: return "VK_FORMAT_R16G16B16A16_SFLOAT";
+        case VK_FORMAT_R16G16B16A16_UNORM: return "VK_FORMAT_R16G16B16A16_UNORM";
+        case VK_FORMAT_A2B10G10R10_UNORM_PACK32: return "VK_FORMAT_A2B10G10R10_UNORM_PACK32";
+        default: return nullptr;
+    }
+}
+
+static const char *color_space_name(VkColorSpaceKHR colorSpace) {
+    switch (colorSpace) {
+        case VK_COLOR_SPACE_SRGB_NONLINEAR_KHR: return "VK_COLOR_SPACE_SRGB_NONLINEAR_KHR";
+        case VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT: return "VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT";
+        case VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT: return "VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT";
+        case VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT: return "VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT";
+        case VK_COLOR_SPACE_DCI_P3_NONLINEAR_EXT: return "VK_COLOR_SPACE_DCI_P3_NONLINEAR_EXT";
+        case VK_COLOR_SPACE_BT709_LINEAR_EXT: return "VK_COLOR_SPACE_BT709_LINEAR_EXT";
+        case VK_COLOR_SPACE_BT709_NONLINEAR_EXT: return "VK_COLOR_SPACE_BT709_NONLINEAR_EXT";
+        case VK_COLOR_SPACE_BT2020_LINEAR_EXT: return "VK_COLOR_SPACE_BT2020_LINEAR_EXT";
+        case VK_COLOR_SPACE_HDR10_ST2084_EXT: return "VK_COLOR_SPACE_HDR10_ST2084_EXT";
+        case VK_COLOR_SPACE_DOLBYVISION_EXT: return "VK_COLOR_SPACE_DOLBYVISION_EXT";
+        case VK_COLOR_SPACE_HDR10_HLG_EXT: return "VK_COLOR_SPACE_HDR10_HLG_EXT";
+        case VK_COLOR_SPACE_ADOBERGB_LINEAR_EXT: return "VK_COLOR_SPACE_ADOBERGB_LINEAR_EXT";
+        case VK_COLOR_SPACE_ADOBERGB_NONLINEAR_EXT: return "VK_COLOR_SPACE_ADOBERGB_NONLINEAR_EXT";
+        case VK_COLOR_SPACE_PASS_THROUGH_EXT: return "VK_COLOR_SPACE_PASS_THROUGH_EXT";
+        case VK_COLOR_SPACE_EXTENDED_SRGB_NONLINEAR_EXT: return "VK_COLOR_SPACE_EXTENDED_SRGB_NONLINEAR_EXT";
+        default: return nullptr;
+    }
+}
+
 static void log_v2a1_diagnostic(
     const LsfgBridgeSnapshotV2 &snap,
     const std::vector<VkImage> &images,
@@ -227,6 +279,38 @@ static void log_v2a1_diagnostic(
     const uint32_t additionalQueueFlags = queueFamilyFlags & ~knownQueueFlags;
     const uint32_t imageCount = static_cast<uint32_t>(images.size());
     const uint32_t presentModeCount = static_cast<uint32_t>(presentModes.size());
+
+    const char *fmtName = format_name(snap.imageFormat);
+    char fmtBuf[64];
+    if (fmtName != nullptr) {
+        std::snprintf(fmtBuf, sizeof(fmtBuf), "%s", fmtName);
+    } else {
+        std::snprintf(fmtBuf, sizeof(fmtBuf), "VK_FORMAT_UNKNOWN_%u", static_cast<uint32_t>(snap.imageFormat));
+    }
+
+    const char *csName = color_space_name(snap.imageColorSpace);
+    char csBuf[64];
+    if (csName != nullptr) {
+        std::snprintf(csBuf, sizeof(csBuf), "%s", csName);
+    } else {
+        std::snprintf(csBuf, sizeof(csBuf), "VK_COLOR_SPACE_UNKNOWN_%u", static_cast<uint32_t>(snap.imageColorSpace));
+    }
+
+    const char *activeModeName = present_mode_name(snap.presentMode);
+    char activeModeBuf[64];
+    if (activeModeName != nullptr) {
+        std::snprintf(activeModeBuf, sizeof(activeModeBuf), "%s", activeModeName);
+    } else {
+        std::snprintf(activeModeBuf, sizeof(activeModeBuf), "VK_PRESENT_MODE_UNKNOWN_%u", static_cast<uint32_t>(snap.presentMode));
+    }
+
+    bool allImagesNonNull = true;
+    for (const VkImage image : images) {
+        if (image == VK_NULL_HANDLE) {
+            allImagesNonNull = false;
+            break;
+        }
+    }
 
     LOGI("[LSFG-V2A1] generation=%" PRIu64
          " currentExtent=%ux%u minImageExtent=%ux%u maxImageExtent=%ux%u"
@@ -264,10 +348,28 @@ static void log_v2a1_diagnostic(
          attempt > 0 ? attempt - 1 : 0,
          staleRetries);
 
-    LOGI("[LSFG-V2A1] handles instance=%p physicalDevice=%p device=%p queue=%p swapchain=%" PRIu64 " surface=%" PRIu64
+    LOGI("[LSFG-V2A1] handles instance=%p physicalDevice=%p device=%p queue=%p queueFamilyIndex=%u queueIndex=%u swapchain=%" PRIu64 " surface=%" PRIu64
          " imageCountStatus=%d",
          snap.instance, snap.physicalDevice, snap.device, snap.presentQueue,
+         snap.queueFamilyIndex, snap.queueIndex,
          bridge_handle_to_u64(snap.swapchain), bridge_handle_to_u64(snap.surface), imageCountStatus);
+
+    LOGI("[LSFG-V2A1] formatNumeric=%u formatDecoded=%s colorSpaceNumeric=%u colorSpaceDecoded=%s activePresentModeNumeric=%u activePresentModeDecoded=%s",
+         static_cast<uint32_t>(snap.imageFormat), fmtBuf,
+         static_cast<uint32_t>(snap.imageColorSpace), csBuf,
+         static_cast<uint32_t>(snap.presentMode), activeModeBuf);
+
+    LOGI("[LSFG-V2A1] swapchainConfig extent=%ux%u requestedMinImageCount=%u actualImageCount=%u imageUsage=0x%x surfaceMinImages=%u surfaceMaxImages=%u",
+         snap.imageExtent.width, snap.imageExtent.height,
+         snap.requestedMinImageCount, snap.actualImageCount,
+         static_cast<uint32_t>(snap.imageUsage),
+         snap.surfaceCapabilities.minImageCount, snap.surfaceCapabilities.maxImageCount);
+
+    for (size_t i = 0; i < images.size(); ++i) {
+        LOGI("[LSFG-V2A1] swapchainImage[%zu]=0x%" PRIx64 " nonNull=%s",
+             i, bridge_handle_to_u64(images[i]), images[i] != VK_NULL_HANDLE ? "true" : "false");
+    }
+    LOGI("[LSFG-V2A1] allImagesNonNull=%s", allImagesNonNull ? "true" : "false");
 
     for (const VkPresentModeKHR mode : presentModes) {
         const char *name = present_mode_name(mode);
@@ -277,6 +379,75 @@ static void log_v2a1_diagnostic(
             LOGI("[LSFG-V2A1] supportedPresentModes=UNKNOWN numeric=%u", static_cast<uint32_t>(mode));
         }
     }
+
+    printf("[LSFG-V2A1] generation=%" PRIu64
+           " currentExtent=%ux%u minImageExtent=%ux%u maxImageExtent=%ux%u"
+           " maxImageArrayLayers=%u supportedTransforms=0x%x currentTransform=0x%x"
+           " supportedCompositeAlpha=0x%x supportedUsageFlags=0x%x"
+           " queueFamilyFlags=0x%x graphics=%u compute=%u transfer=%u sparse=%u"
+           " additionalQueueFlags=0x%x queueFamilyQueueCount=%u"
+           " supportedPresentModeCount=%u supportedPresentModes=%u"
+           " swapchainImageCount=%u swapchainImageCopyOutStatus=%d"
+           " presentModeCountStatus=%d presentModeCopyOutStatus=%d"
+           " attempt=%u retryCount=%u staleRetries=%u\n",
+           snap.generation,
+           snap.surfaceCapabilities.currentExtent.width, snap.surfaceCapabilities.currentExtent.height,
+           snap.surfaceCapabilities.minImageExtent.width, snap.surfaceCapabilities.minImageExtent.height,
+           snap.surfaceCapabilities.maxImageExtent.width, snap.surfaceCapabilities.maxImageExtent.height,
+           snap.surfaceCapabilities.maxImageArrayLayers,
+           static_cast<uint32_t>(snap.surfaceCapabilities.supportedTransforms),
+           static_cast<uint32_t>(snap.surfaceCapabilities.currentTransform),
+           static_cast<uint32_t>(snap.surfaceCapabilities.supportedCompositeAlpha),
+           static_cast<uint32_t>(snap.surfaceCapabilities.supportedUsageFlags),
+           queueFamilyFlags,
+           (queueFamilyFlags & VK_QUEUE_GRAPHICS_BIT) != 0,
+           (queueFamilyFlags & VK_QUEUE_COMPUTE_BIT) != 0,
+           (queueFamilyFlags & VK_QUEUE_TRANSFER_BIT) != 0,
+           (queueFamilyFlags & VK_QUEUE_SPARSE_BINDING_BIT) != 0,
+           additionalQueueFlags,
+           snap.queueFamilyQueueCount,
+           snap.supportedPresentModeCount,
+           presentModeCount,
+           imageCount,
+           imageCopyOutStatus,
+           presentModeCountStatus,
+           presentModeCopyOutStatus,
+           attempt,
+           attempt > 0 ? attempt - 1 : 0,
+           staleRetries);
+
+    printf("[LSFG-V2A1] handles instance=%p physicalDevice=%p device=%p queue=%p queueFamilyIndex=%u queueIndex=%u swapchain=%" PRIu64 " surface=%" PRIu64
+           " imageCountStatus=%d\n",
+           snap.instance, snap.physicalDevice, snap.device, snap.presentQueue,
+           snap.queueFamilyIndex, snap.queueIndex,
+           bridge_handle_to_u64(snap.swapchain), bridge_handle_to_u64(snap.surface), imageCountStatus);
+
+    printf("[LSFG-V2A1] formatNumeric=%u formatDecoded=%s colorSpaceNumeric=%u colorSpaceDecoded=%s activePresentModeNumeric=%u activePresentModeDecoded=%s\n",
+           static_cast<uint32_t>(snap.imageFormat), fmtBuf,
+           static_cast<uint32_t>(snap.imageColorSpace), csBuf,
+           static_cast<uint32_t>(snap.presentMode), activeModeBuf);
+
+    printf("[LSFG-V2A1] swapchainConfig extent=%ux%u requestedMinImageCount=%u actualImageCount=%u imageUsage=0x%x surfaceMinImages=%u surfaceMaxImages=%u\n",
+           snap.imageExtent.width, snap.imageExtent.height,
+           snap.requestedMinImageCount, snap.actualImageCount,
+           static_cast<uint32_t>(snap.imageUsage),
+           snap.surfaceCapabilities.minImageCount, snap.surfaceCapabilities.maxImageCount);
+
+    for (size_t i = 0; i < images.size(); ++i) {
+        printf("[LSFG-V2A1] swapchainImage[%zu]=0x%" PRIx64 " nonNull=%s\n",
+               i, bridge_handle_to_u64(images[i]), images[i] != VK_NULL_HANDLE ? "true" : "false");
+    }
+    printf("[LSFG-V2A1] allImagesNonNull=%s\n", allImagesNonNull ? "true" : "false");
+
+    for (const VkPresentModeKHR mode : presentModes) {
+        const char *name = present_mode_name(mode);
+        if (name != nullptr) {
+            printf("[LSFG-V2A1] supportedPresentModes=%s numeric=%u\n", name, static_cast<uint32_t>(mode));
+        } else {
+            printf("[LSFG-V2A1] supportedPresentModes=UNKNOWN numeric=%u\n", static_cast<uint32_t>(mode));
+        }
+    }
+    fflush(stdout);
 }
 
 static void v2a1_metadata_worker() {
@@ -301,17 +472,32 @@ static void v2a1_metadata_worker() {
         LsfgBridgeSnapshotV2 snap{};
         snap.abiVersion = LSFG_BRIDGE_ABI_VERSION_V2;
         snap.structSize = sizeof(LsfgBridgeSnapshotV2);
-        int32_t snapshotStatus = snapshotFn(&snap);
-        if (snapshotStatus != 0 || (snap.validMask & 0x04) == 0 ||
-            (snap.validMask & 0x10) == 0 || (snap.validMask & 0x40) == 0) {
-            continue;
-        }
-        if ((snap.validMask & 0x40) != 0) {
-            const VkQueueFlags observedQueueFlags = snap.queueFamilyFlags;
-            const uint32_t observedQueueCount = snap.queueFamilyQueueCount;
-            if (observedQueueFlags == 0 && observedQueueCount == 0) {
+
+        bool metadataReady = false;
+        for (uint32_t readyAttempt = 0; readyAttempt < 10; ++readyAttempt) {
+            snap = LsfgBridgeSnapshotV2{};
+            snap.abiVersion = LSFG_BRIDGE_ABI_VERSION_V2;
+            snap.structSize = sizeof(LsfgBridgeSnapshotV2);
+            int32_t snapshotStatus = snapshotFn(&snap);
+            if (snapshotStatus != 0 ||
+                (snap.validMask & 0x04) == 0 ||
+                (snap.validMask & 0x10) == 0 ||
+                (snap.validMask & 0x40) == 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 continue;
             }
+            if ((snap.validMask & 0x40) != 0) {
+                const VkQueueFlags observedQueueFlags = snap.queueFamilyFlags;
+                const uint32_t observedQueueCount = snap.queueFamilyQueueCount;
+                if (observedQueueFlags != 0 || observedQueueCount != 0) {
+                    metadataReady = true;
+                    break;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (!metadataReady) {
+            continue;
         }
 
         const uint64_t generation = snap.generation;
