@@ -1,11 +1,11 @@
 # LSFG V2B.1 — DUPLICATE-FRAME ACTIVE TRANSPORT ARCHITECTURAL DESIGN SPECIFICATION
 
-**Document ID:** `SPEC-LSFG-V2B1-002`
+**Document ID:** `SPEC-LSFG-V2B1-003`
 **Date:** 2026-08-28
-**Status:** PROPOSED / PENDING APPROVAL (REVISED)
+**Status:** PROPOSED / PENDING APPROVAL (FORMAL SYNCHRONIZATION REVISION)
 **Primary Repository:** `C:\Proyectos\SGSR` (`feature/android-lsfg-integration`)
 **Auxiliary Repository:** `C:\Proyectos\amethyst` (`feature/lsfg-vulkan-interposer`)
-**Auxiliary Repository:** `C:\Proyectos\LS-FG` (`feature/minecraft-fabric-lsfg`)  
+**Auxiliary Repository:** `C:\Proyectos\LS-FG` (`feature/minecraft-fabric-lsfg`)
 
 ---
 
@@ -16,7 +16,7 @@ Milestone **LSFG V2B.1 (Duplicate-Frame Active Transport)** establishes the firs
 Following the successful physical validation of Milestone **V2B.0 (FIFO Passive Baseline)** on the AYN Odin 2 Portal (Qualcomm Snapdragon 8 Gen 2 / Adreno 740), where `VK_PRESENT_MODE_FIFO_KHR` was proven stable and fully compatible with Zink, Iris, Complementary Reimagined shaders, and SGSR1 upscaling, V2B.1 implements the **active presentation doubling loop**.
 
 ### Core Architectural Premise
-> **Can the Vulkan interposer actively double the physical presentation cadence ($2\times$ real swapchain presents per application render frame) by acquiring a second swapchain image $M$, copying the current rendered frame $N$ into $M$ on Queue 0, and submitting presentations in the strict order $M \rightarrow N$ under `VK_PRESENT_MODE_FIFO_KHR`, while maintaining 100% legal Vulkan binary semaphore lifetimes, zero resource leakage, and zero regressions in the graphics pipeline?**
+> **Can the Vulkan interposer actively double the physical presentation cadence ($2\times$ real swapchain presents per application render frame) by acquiring a second swapchain image $M$, copying the current rendered frame $N$ into $M$ on Queue 0, and submitting presentations in the strict order $M \rightarrow N$ under `VK_PRESENT_MODE_FIFO_KHR`, while maintaining 100% legal Vulkan binary semaphore lifetimes, mathematically proven resource reuse, and zero regressions in the graphics pipeline?**
 
 V2B.1 deliberately isolates the **WSI transport, queue submission, and synchronization machinery** from frame generation algorithms (neural networks, optical flow, motion vectors). By presenting a **duplicate frame $M$** immediately prior to real frame $N$, V2B.1 establishes the authoritative physical transport topology required for true intermediate frame interpolation in subsequent milestones (V3/V4).
 
@@ -58,8 +58,8 @@ Queue Family: 0 (Flags: 0xF -> GRAPHICS | COMPUTE | TRANSFER | SPARSE_BINDING), 
 ```
 
 ### Key Architectural Takeaways for V2B.1:
-1. **`actualImageCount = 4`**: Provides 4 in-flight swapchain images. This provides sufficient buffer depth for $2\times$ presentation under FIFO without stalling the application pipeline.
-2. **`imageUsage = 0x97`**: Crucially includes both `VK_IMAGE_USAGE_TRANSFER_SRC_BIT` (`0x01`) and `VK_IMAGE_USAGE_TRANSFER_DST_BIT` (`0x02`), allowing direct hardware `vkCmdCopyImage` between swapchain images without requiring swapchain recreation with custom flags!
+1. **Dynamic Image Sizing (`actualImageCount`)**: While the current physical baseline reports 4 images, transport presentation resource allocation is dynamically sized to `actualImageCount` (never hardcoded to 4).
+2. **`imageUsage = 0x97`**: Crucially includes both `VK_IMAGE_USAGE_TRANSFER_SRC_BIT` (`0x01`) and `VK_IMAGE_USAGE_TRANSFER_DST_BIT` (`0x02`), allowing direct hardware `vkCmdCopyImage` between swapchain images without requiring swapchain recreation with custom flags.
 3. **Queue Family 0 has `0xF`**: Supports Graphics, Compute, and Transfer operations simultaneously on Queue 0.
 
 ---
@@ -91,46 +91,91 @@ Therefore, the GPU copy $N \rightarrow M$ **must execute while $N$ is still held
 
 ---
 
-## 5. Binary Semaphore Lifetime & Synchronization Topology
+## 5. Formal Resource Model & Semaphore Lifetime Proof
 
-### 5.1 The Binary Semaphore Single-Consumption Rule
-In Vulkan, a binary semaphore signal can be waited on **exactly once**. Re-waiting a binary semaphore without an intervening signal is an illegal Vulkan API violation that causes GPU deadlocks or validation layer errors.
+### 5.1 Separation of Transport-Slot and Presentation Resources
 
-In the application's intercepted call `vkQueuePresentKHR(N)`, `pPresentInfo->pWaitSemaphores` contains application render semaphores ($S_{\text{app\_render}}$).
+To prevent conflation between GPU submission lifecycles and presentation engine lifecycles, V2B.1 strictly separates resources into two orthogonal tiers:
 
-In V2B.1:
-1. **$S_{\text{app\_render}}$ is consumed by the Copy Submission ($N \rightarrow M$)**:
-   The GPU copy cannot begin until application rendering into $N$ is complete. Therefore, `vkQueueSubmit` consumes $S_{\text{app\_render}}$.
-2. **$S_{\text{extra\_acquire}}$ is consumed by the Copy Submission**:
-   The GPU copy cannot write into $M$ until $M$ has been released by the presentation engine. Therefore, `vkQueueSubmit` also waits on $S_{\text{extra\_acquire}}$.
-3. **Copy Submission signals TWO distinct present-ready semaphores**:
-   - $S_{\text{gen\_present\_ready}}$: Signaled when copy into $M$ is complete.
-   - $S_{\text{real\_present\_ready}}$: Signaled when reading from $N$ is complete.
-4. **Real Present $M$ waits on $S_{\text{gen\_present\_ready}}$**: Consumes the signal exactly once.
-5. **Real Present $N$ waits on $S_{\text{real\_present\_ready}}$**: Consumes the signal exactly once. Original $S_{\text{app\_render}}$ is **never passed to real present $N$**.
+```cpp
+// 1. TRANSPORT-SLOT RESOURCES (Bounded pool of execution contexts)
+struct TransportSlot {
+    VkSemaphore extraAcquireSemaphore{VK_NULL_HANDLE};
+    VkFence copyFence{VK_NULL_HANDLE};
+    VkCommandBuffer commandBuffer{VK_NULL_HANDLE};
+    VkCommandBuffer recoveryCommandBuffer{VK_NULL_HANDLE};
+    bool inFlight{false};
+};
 
-```mermaid
-graph TD
-    AppWait["App Render Semaphore(s) S_app_render"] --> CopySubmit["vkQueueSubmit (Copy N -> M)"]
-    AcqWait["Extra Acquire Semaphore S_extra_acquire"] --> CopySubmit
+// 2. PRESENTATION RESOURCES (Strictly indexed by swapchain image index [0 .. actualImageCount-1])
+struct SwapchainImagePresentationState {
+    VkSemaphore generatedPresentReady{VK_NULL_HANDLE}; // Consumed by realQueuePresentKHR(M)
+    VkSemaphore realPresentReady{VK_NULL_HANDLE};      // Consumed by realQueuePresentKHR(N)
+    VkSemaphore recoveryPresentReady{VK_NULL_HANDLE};  // Used only during emergency M return
+};
 
-    CopySubmit -->|Signals| GenReady["S_gen_present_ready"]
-    CopySubmit -->|Signals| RealReady["S_real_present_ready"]
-    CopySubmit -->|Signals| Fence["F_slot (GPU Complete)"]
+struct V2B1TransportState {
+    bool initialized{false};
+    VkDevice device{VK_NULL_HANDLE};
+    VkQueue queue{VK_NULL_HANDLE};
+    uint32_t queueFamilyIndex{0};
+    VkCommandPool commandPool{VK_NULL_HANDLE};
 
-    GenReady --> PresentM["realQueuePresentKHR(M)"]
-    RealReady --> PresentN["realQueuePresentKHR(N)"]
+    static constexpr uint32_t kSlotCount = 2; // Bounded execution slots (double buffered)
+    TransportSlot slots[kSlotCount];
+    uint32_t currentSlot{0};
+
+    uint32_t imageCount{0};
+    std::vector<SwapchainImagePresentationState> imagePresentation; // Sized to actualImageCount
+    std::vector<VkImage> swapchainImages;                           // Sized to actualImageCount
+};
 ```
 
-### 5.2 Formal Proof of Semaphore Reuse Safety
-A binary semaphore passed as a wait semaphore to `vkQueuePresentKHR` is consumed when the presentation engine acquires the image for display.
+---
 
-To prove that $S_{\text{gen\_present\_ready}}$, $S_{\text{real\_present\_ready}}$, and $S_{\text{extra\_acquire}}$ can legally be reused without race conditions:
-1. **Per-Transport-Slot Ring Buffer**: The interposer maintains a fixed ring of $K$ transport slots (`kSlotCount = 4`, matching `actualImageCount = 4`).
-2. **Slot Selection & In-Flight Tracking**: Slot $i$ is selected cyclically: `slot = g_syncIndex % kSlotCount`.
-3. **Fence Retirement Gate**: Slot $i$ owns a dedicated `VkFence` $F_i$. Before slot $i$ can be reused for a new frame, the interposer calls `vkGetFenceStatus(device, F_i)` / `vkWaitForFences(device, 1, &F_i, VK_TRUE, 0)`. This guarantees that the prior GPU copy submission using slot $i$'s semaphores has completely finished.
-4. **Image Lifecycle Guarantee**: Because the swapchain has 4 images, by the time slot $i$ is reused 4 frames later, the swapchain image presented with that slot's semaphores has been displayed and recycled by the display engine.
-5. **Bounded Limiter (V2B.1A)**: In Milestone V2B.1A, execution is bounded to **exactly 1 active duplicate per process/swapchain generation**. Thus, no cyclic reuse occurs during initial physical validation, guaranteeing zero reuse hazard.
+### 5.2 Transport Slot Reuse Proof (`copyFence` & `extraAcquireSemaphore`)
+
+- **Resource:** `slot.extraAcquireSemaphore`, `slot.commandBuffer`, `slot.copyFence`.
+- **Signal Point:** `slot.extraAcquireSemaphore` is signaled by the Vulkan presentation engine upon successful completion of `realAcquireNextImageKHR(swapchain, ..., slot.extraAcquireSemaphore, ..., &M)`.
+- **Wait Point:** Consumed by `realQueueSubmit(queue, 1, &copySubmitInfo, slot.copyFence)`.
+- **Formal Reuse Proof:**
+  1. `slot.copyFence` is submitted to the GPU queue in the identical `VkSubmitInfo` that waits on `slot.extraAcquireSemaphore`.
+  2. Under Vulkan Spec Section 7.3 (*Fences*), `slot.copyFence` reaches the signaled state **only after all queue operations and semaphore wait operations in that submit have completed on the device**.
+  3. When `vkGetFenceStatus(device, slot.copyFence) == VK_SUCCESS`, the GPU has completely finished reading `slot.commandBuffer` and has completely consumed the binary signal of `slot.extraAcquireSemaphore`.
+  4. Therefore, `slot.extraAcquireSemaphore` is guaranteed to be in an unsignaled, unreferenced state, and `slot.commandBuffer` is safe for reset/recording.
+
+---
+
+### 5.3 Formal Reuse Proof for Generated Present Semaphore (`generatedPresentReady[M]`)
+
+- **Resource:** `imagePresentation[M].generatedPresentReady`.
+- **Signal Point:** Signaled by `realQueueSubmit` of the $N \rightarrow M$ copy workload.
+- **Wait Point:** Consumed by `realQueuePresentKHR(queue, &presentInfoM)` where `pImageIndices[0] = M`.
+- **Prior Lifetime Event:** A previous frame presented image $M$ using `generatedPresentReady[M]`.
+- **Formal Reuse Proof:**
+  1. Under Vulkan Spec Section 34.6 (*WSI Semaphore and Image Ownership Rules*), when an image $M$ is presented via `vkQueuePresentKHR(M)`, the presentation engine takes ownership of $M$ and consumes its associated wait semaphore `generatedPresentReady[M]`.
+  2. The presentation engine retains ownership of $M$ until $M$ is re-acquired via `vkAcquireNextImageKHR`.
+  3. When `vkAcquireNextImageKHR` successfully returns image index $M$, the presentation engine has finished displaying the previous contents of $M$ and has completed the wait on `generatedPresentReady[M]`.
+  4. Furthermore, `realQueueSubmit` (the $N \rightarrow M$ copy) waits on `slot.extraAcquireSemaphore` (the acquisition signal for $M$).
+  5. Therefore, GPU execution of the copy submit—and its signaling of `generatedPresentReady[M]`—is strictly sequenced **after** the presentation engine has released $M$ and consumed the previous `generatedPresentReady[M]`.
+  6. **Conclusion:** `generatedPresentReady[M]` is 100% legally reusable without any reliance on elapsed frame counts or ring-timing heuristics.
+
+---
+
+### 5.4 Formal Reuse Proof for Real Present Semaphore (`realPresentReady[N]`)
+
+- **Resource:** `imagePresentation[N].realPresentReady`.
+- **Signal Point:** Signaled by `realQueueSubmit` of the $N \rightarrow M$ copy workload.
+- **Wait Point:** Consumed by `realQueuePresentKHR(queue, &presentInfoN)` where `pImageIndices[0] = N`.
+- **Prior Lifetime Event:** A previous frame presented image $N$ using `realPresentReady[N]`.
+- **Formal Transitive Reuse Proof:**
+  1. In a conforming Vulkan application (such as Zink / PurpleVK), the application cannot render into image $N$ until it re-acquires $N$ via `vkAcquireNextImageKHR` and waits on the associated acquisition semaphore.
+  2. The application records its rendering commands into $N$, transitions layouts, and submits rendering with a signal to its application render semaphore $S_{\text{app\_render}}$.
+  3. Under Vulkan specification execution and memory dependency rules, $S_{\text{app\_render}}$ is signaled only after application rendering into $N$ completes, which is strictly dependent on the re-acquisition of $N$.
+  4. The V2B.1 copy submission ($N \rightarrow M$) explicitly includes $S_{\text{app\_render}}$ in its `VkSubmitInfo::pWaitSemaphores`.
+  5. Therefore, GPU execution reaching the signal operation for `realPresentReady[N]` is transitively sequenced after:
+     $$\text{Previous Present}(N) \longrightarrow \text{App Re-acquire}(N) \longrightarrow \text{App Render}(N) \longrightarrow S_{\text{app\_render}} \longrightarrow \text{Copy Submit} \longrightarrow \text{Signal } \text{realPresentReady}[N]$$
+  6. **Conclusion:** `realPresentReady[N]` is 100% legally reusable across repeated continuous frames for any valid Vulkan application pipeline.
 
 ---
 
@@ -141,12 +186,12 @@ The following table defines the exact state and ownership transitions during a s
 | Step | Operation | $N$ Ownership | $M$ Ownership | Active Semaphore States |
 | :--- | :--- | :--- | :--- | :--- |
 | **1. Entry** | App calls `vkQueuePresentKHR(N)` | App/Interposer | Presentation Engine | $S_{\text{app\_render}}$ is SIGNALED by app render. |
-| **2. Slot Prep** | Select slot $i$; verify fence $F_i$ signaled | App/Interposer | Presentation Engine | Slot $i$ resources confirmed idle. Reset $F_i$. |
-| **3. Extra Acquire** | `realAcquireNextImageKHR(swapchain, S_extra_acquire[i], ...)` $\rightarrow M$ | App/Interposer | Interposer | $S_{\text{extra\_acquire}}[i]$ will be SIGNALED when $M$ is available. |
-| **4. Copy Submit** | `vkQueueSubmit(Queue 0, Copy N -> M)` | App/Interposer | Interposer | **Waits:** $S_{\text{app\_render}} + S_{\text{extra\_acquire}}[i]$ (both consumed).<br>**Signals:** $S_{\text{gen\_present}}[i] + S_{\text{real\_present}}[i] + F_i$. |
-| **5. Present $M$** | `realQueuePresentKHR(M)` | App/Interposer | Transferred to WSI | **Waits:** $S_{\text{gen\_present}}[i]$ (consumed by WSI). |
-| **6. Present $N$** | `realQueuePresentKHR(N)` | Transferred to WSI | WSI Display | **Waits:** $S_{\text{real\_present}}[i]$ (consumed by WSI). |
-| **7. Return** | Return semantic `VkResult` of $N$ to caller | WSI Display | WSI Display | Frame complete. Slot $i$ marked in-flight until $F_i$ signals. |
+| **2. Slot Prep** | Select slot $i$; verify `copyFence[i]` signaled | App/Interposer | Presentation Engine | Slot $i$ resources confirmed idle. Reset `copyFence[i]`. |
+| **3. Extra Acquire** | `realAcquireNextImageKHR(swapchain, ..., S_extra_acquire[i], ..., &M)` | App/Interposer | Interposer | `S_extra_acquire[i]` will be SIGNALED when $M$ is available. |
+| **4. Copy Submit** | `vkQueueSubmit(Queue 0, Copy N -> M)` | App/Interposer | Interposer | **Waits:** $S_{\text{app\_render}} + \text{S\_extra\_acquire}[i]$ (both consumed).<br>**Signals:** `generatedPresentReady[M]` + `realPresentReady[N]` + `copyFence[i]`. |
+| **5. Present $M$** | `realQueuePresentKHR(M)` | App/Interposer | Transferred to WSI | **Waits:** `generatedPresentReady[M]` (consumed by WSI). |
+| **6. Present $N$** | `realQueuePresentKHR(N)` | Transferred to WSI | WSI Display | **Waits:** `realPresentReady[N]` (consumed by WSI). Original $S_{\text{app\_render}}$ is NOT passed. |
+| **7. Return** | Return semantic `VkResult` of $N$ to caller | WSI Display | WSI Display | Frame complete. Slot $i$ marked in-flight until `copyFence[i]` signals. |
 
 ---
 
@@ -185,7 +230,7 @@ Both $N$ and $M$ are color swapchain images of format `VK_FORMAT_R8G8B8A8_UNORM`
   - `dstStageMask`: `VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT`
 
 ### 7.2 Hardware Copy Execution (`vkCmdCopyImage`)
-The copy operation is strictly `vkCmdCopyImage` (full image copy, no blit filtering):
+The copy operation is strictly `vkCmdCopyImage` (full image copy, color aspect, mip 0, layer 0, full extent):
 ```cpp
 VkImageCopy copyRegion{};
 copyRegion.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -201,7 +246,7 @@ realCmdCopyImage(cmdBuf, imageN, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 
 ---
 
-## 8. Post-Commit Recovery & State Machine
+## 8. Post-Commit Recovery, Error Matrix & State Machine
 
 A successful extra acquire of $M$ is the **irreversible ownership boundary**. Once $M$ is acquired, it cannot be abandoned; it must be returned to the presentation engine via `realQueuePresentKHR` or handled cleanly.
 
@@ -214,33 +259,37 @@ stateDiagram-v2
     EXTRA_ACQUIRE_ATTEMPT --> PASS_THROUGH: Acquire returned TIMEOUT / NOT_READY
     EXTRA_ACQUIRE_ATTEMPT --> EXTRA_IMAGE_OWNED: Acquire returned VK_SUCCESS (M owned)
 
-    state "POST-COMMIT BOUNDARY (M Must Be Presented)" as PostCommit {
+    state "POST-COMMIT BOUNDARY (M Must Be Handled)" as PostCommit {
         EXTRA_IMAGE_OWNED --> COPY_RECORDED: Record vkCmdCopyImage
         COPY_RECORDED --> COPY_SUBMITTED: vkQueueSubmit successful
         COPY_SUBMITTED --> GEN_PRESENT_QUEUED: realQueuePresentKHR(M)
         GEN_PRESENT_QUEUED --> ORIG_PRESENT_QUEUED: realQueuePresentKHR(N)
 
-        EXTRA_IMAGE_OWNED --> EMERGENCY_PRESENT_M: Recording / Submit Failed
-        EMERGENCY_PRESENT_M --> ORIG_PRESENT_QUEUED: Present M (unmodified) to release
+        EXTRA_IMAGE_OWNED --> RECOVERY_SUBMIT_M: Submit Failed (OOM)
+        RECOVERY_SUBMIT_M --> EMERGENCY_PRESENT_M: Execute Pre-created Recovery Submit
+        EMERGENCY_PRESENT_M --> ORIG_PRESENT_QUEUED: Present M to release WSI ownership
+
+        EXTRA_IMAGE_OWNED --> TERMINAL_DEVICE_LOST: Device Lost
     }
 
     ORIG_PRESENT_QUEUED --> COMPLETE: Return N's result to Zink
     PASS_THROUGH --> COMPLETE: Call realQueuePresentKHR(N) with original info
 ```
 
-### 8.1 Post-Commit Error Matrix
+### 8.1 Post-Commit Detailed Error Matrix
 
-| Failure Event | Ownership State | Semaphores State | Remediation Vulkan Calls | Result Returned to Zink | V2B.1 State |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Command Recording Error** | $N$ held, $M$ owned | $S_{\text{app}}$ intact, $S_{\text{extra}}$ signaled | Submit dummy transfer barrier or present $M$ directly waiting on $S_{\text{extra}}$, then present $N$ waiting on $S_{\text{app}}$. | Return result of $N$. | Fallback logged; V2B.1 active. |
-| **Queue Submit Failure** | $N$ held, $M$ owned | $S_{\text{app}}$ intact, $S_{\text{extra}}$ signaled | Present $M$ waiting on $S_{\text{extra}}$; present $N$ waiting on $S_{\text{app}}$. | Return `VK_ERROR_DEVICE_LOST` or submit error. | Disable V2B.1 for swapchain. |
-| **Generated $M$ Present Error** (`OUT_OF_DATE` / `SUBOPTIMAL`) | $M$ released to WSI, $N$ held | $S_{\text{gen}}$ consumed | Present $N$ waiting on $S_{\text{real\_present}}$. | Return result of $N$. If fatal, return fatal. | Recreate swapchain. |
-| **Original $N$ Present Error** (`OUT_OF_DATE` / `SURFACE_LOST`) | $M$ in WSI, $N$ in WSI | All consumed | No remaining driver calls. | Return exact `VkResult` of $N$ to Zink. | Normal WSI handling. |
+| Failure Event | Vulkan State & Semaphores | Remediation Vulkan Operations | Result Returned to Zink | V2B.1 State |
+| :--- | :--- | :--- | :--- | :--- |
+| **`vkQueueSubmit` Failure (`VK_ERROR_OUT_OF_HOST/DEVICE_MEMORY`)** | $N$ held, $M$ owned. Under Vulkan Spec, resource & semaphore state is **unaffected** by failed submit. $S_{\text{app\_render}}$ and `S_extra_acquire` remain SIGNALED. | Submit pre-created `recoveryCommandBuffer` on Queue 0 waiting on `S_extra_acquire` (transitions $M$ to `PRESENT_SRC_KHR`), signaling `recoveryPresentReady[M]`. Call `realQueuePresentKHR(M)` with `recoveryPresentReady[M]`. Then call `realQueuePresentKHR(N)` with original $S_{\text{app\_render}}$. | Return result of $N$. Log `v2b1PostCommitFailure`. | Fallback logged; V2B.1 remains enabled. |
+| **`vkQueueSubmit` Failure (`VK_ERROR_DEVICE_LOST`)** | GPU context destroyed. Device lost is fatal and irreversible. | Do NOT attempt further submit or present calls. Clean up local CPU tracking. | Return `VK_ERROR_DEVICE_LOST` to Zink. | Mark transport TERMINAL. |
+| **`vkQueuePresentKHR(M)` (`OUT_OF_HOST/DEVICE_MEMORY`)** | Submission succeeded; semaphore `generatedPresentReady[M]` remains enqueued/signaled. | Retry present of $M$ or proceed to present $N$ waiting on `realPresentReady[N]`. | Return result of $N$. | Log error. |
+| **`vkQueuePresentKHR(M)` (`OUT_OF_DATE` / `SURFACE_LOST`)** | Under Vulkan Spec Section 34.6, queue operations and semaphore waits are **considered enqueued**. $M$ is released. | Proceed immediately to call `realQueuePresentKHR(N)` waiting on `realPresentReady[N]`. | Return `VK_ERROR_OUT_OF_DATE_KHR` to trigger swapchain recreation. | Trigger swapchain teardown. |
+| **`vkQueuePresentKHR(N)` Error (`OUT_OF_DATE` / `SURFACE_LOST`)** | Both $M$ and $N$ enqueued to WSI. | No remaining driver calls. | Return exact `VkResult` of $N$ to Zink. Caller `pResults` updated. | Normal WSI handling. |
 
 ### 8.2 PresentInfo Rewriting & `pResults` Preservation
 - **Caller's Original `VkPresentInfoKHR`**: Is never mutated in place.
 - **Generated Present ($M$)**: Uses a separate stack-allocated `VkPresentInfoKHR` with a local `VkResult localGenResult`. Caller's `pResults` is **never touched by $M$**.
-- **Original Present ($N$)**: Uses a local stack-allocated `VkPresentInfoKHR` preserving caller's `pResults`, but replacing `pWaitSemaphores` with `&S_real_present_ready`.
+- **Original Present ($N$)**: Uses a local stack-allocated `VkPresentInfoKHR` preserving caller's `pResults`, but replacing `pWaitSemaphores` with `&imagePresentation[N].realPresentReady`.
 
 ---
 
@@ -264,7 +313,7 @@ To ensure 100% deterministic physical validation without risk of continuous FIFO
 ### Phase V2B.1B: Continuous Active Transport
 - **Limiter Policy:** Continuous active duplication on every eligible application frame.
 - **Prerequisite:** V2B.1A physical PASS approved.
-- **Architecture:** Reuses 100% of the identical transport topology and synchronization proven in V2B.1A.
+- **Architecture:** Reuses 100% of the identical transport topology and synchronization proven in V2B.1A, utilizing the per-swapchain-image presentation semaphore model.
 
 ---
 
@@ -298,14 +347,11 @@ New dedicated counters track real driver operations:
 
 ## 11. Resource Lifecycle & Teardown Protocol
 
-### Per-Swapchain Transport Allocation
+### Per-Swapchain Allocation
 Transport resources are allocated on initial swapchain creation in `interposer_vkCreateSwapchainKHR` (outside `g_stateMutex`):
 - `VkCommandPool` (Queue Family 0, `RESET_COMMAND_BUFFER_BIT`)
-- $K=4$ `VkCommandBuffer` handles
-- $K=4$ `VkSemaphore` ($S_{\text{extra\_acquire}}$)
-- $K=4$ `VkSemaphore` ($S_{\text{gen\_present}}$)
-- $K=4$ `VkSemaphore` ($S_{\text{real\_present}}$)
-- $K=4$ `VkFence` ($F_{\text{slot}}$, created in `SIGNALED` state)
+- $K=2$ `TransportSlot` execution contexts (command buffer, recovery command buffer, fence, extra acquire semaphore)
+- `actualImageCount` `SwapchainImagePresentationState` entries (generated present semaphore, real present semaphore, recovery present semaphore)
 
 ### Safe Teardown
 On `interposer_vkDestroySwapchainKHR` and `interposer_vkDestroyDevice`:
@@ -330,29 +376,12 @@ On `interposer_vkDestroySwapchainKHR` and `interposer_vkDestroyDevice`:
 
 ---
 
-## 13. Self-Review & Acceptance Criteria
+## 13. Phased Readiness Evaluation
 
-| Question | Answer | Verification / Spec Reference |
-| :--- | :---: | :--- |
-| **Is $N$ copied before being presented?** | **YES** | Section 4.2: Copy $N \rightarrow M$ submitted before $N$ present. |
-| **Is $M$ presented before $N$?** | **YES** | Section 4.1: Presentation order is strictly $M \rightarrow N$. |
-| **Is every application wait semaphore consumed exactly once?** | **YES** | Section 5.1: Consumed by Copy Submit; excluded from $N$ present. |
-| **Is every LSFG binary signal consumed exactly once?** | **YES** | Section 5.1: $S_{\text{extra}}$, $S_{\text{gen}}$, $S_{\text{real}}$ each have 1 wait. |
-| **Is present-ready semaphore reuse formally proven?** | **YES** | Section 5.2: Ring depth $K=4$, fence retirement gate, single-shot V2B.1A. |
-| **Is acquire-semaphore reuse formally proven?** | **YES** | Section 5.2: Slot recycled only after fence completion. |
-| **Can no successfully acquired $M$ disappear?** | **YES** | Section 8: Post-commit state machine guarantees $M$ presentation. |
-| **Are existing `QueuePresentKHR` counter semantics preserved?** | **YES** | Section 10.1: Tracks application intercepted calls. |
-| **Are internal real presents separately counted?** | **YES** | Section 10.2: `v2b1GeneratedPresent` and `v2b1OriginalPresent`. |
-| **Is `pResults` preserved?** | **YES** | Section 8.2: $N$ writes to caller's `pResults`; $M$ uses local result. |
-| **Is `pNext` conservatively rejected?** | **YES** | Section 8.2: Pass-through if `pNext != nullptr`. |
-| **Is there no per-frame allocation?** | **YES** | Section 11, 12: Pre-allocated at swapchain init. |
-| **Is there no per-frame blocking wait?** | **YES** | Section 12: Non-blocking fence check; timeout=0 acquire. |
-| **Is there no queue/device idle per frame?** | **YES** | Section 11, 12: Prohibited per frame; only on teardown. |
-| **Is there no real Vulkan call under `g_stateMutex`?** | **YES** | Section 12: Strictly outside mutex. |
-| **Is V2B.0 unchanged when V2B.1 is disabled?** | **YES** | Section 7: Strict pass-through when gate is OFF. |
+### V2B.1A (Single-Shot Active Baseline)
+- **Status:** **READY**
+- **Justification:** Bounded to exactly 1 active duplicate frame. All semaphores and transport slots are used exactly once per swapchain generation. No cyclic semaphore reuse is required for physical validation. Post-commit recovery and fail-open guarantees are complete.
 
----
-
-## 14. Document Status
-
-**SPECIFICATION STATUS: READY FOR HUMAN REVIEW**
+### V2B.1B (Continuous Active Transport)
+- **Status:** **READY**
+- **Justification:** Formally proven per-swapchain-image presentation semaphore model (`imagePresentation[actualImageCount]`). Semaphore re-signal safety for both $M$ and $N$ is mathematically established by Vulkan WSI acquisition release and transitive application render dependencies, without any heuristic ring-timing or frame-count assumptions.
