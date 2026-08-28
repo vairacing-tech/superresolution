@@ -239,7 +239,7 @@ static void log_v2a1_diagnostic(
          " presentModeCountStatus=%d presentModeCopyOutStatus=%d"
          " attempt=%u retryCount=%u staleRetries=%u",
          snap.generation,
-         snap.imageExtent.width, snap.imageExtent.height,
+         snap.surfaceCapabilities.currentExtent.width, snap.surfaceCapabilities.currentExtent.height,
          snap.surfaceCapabilities.minImageExtent.width, snap.surfaceCapabilities.minImageExtent.height,
          snap.surfaceCapabilities.maxImageExtent.width, snap.surfaceCapabilities.maxImageExtent.height,
          snap.surfaceCapabilities.maxImageArrayLayers,
