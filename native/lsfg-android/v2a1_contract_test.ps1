@@ -1240,6 +1240,63 @@ function Assert-ConsumerWorkerAndPassivePath {
     Add-Result ($passiveViolations.Count -eq 0) $Scope 'V2A.1 paths contain no acquire, present, submit, synchronization, layout, image-content-copy, mode/count mutation, or LSFG compute operation' ($passiveViolations -join ', ')
 }
 
+function Test-ProducerAuthoritativeQueueOrdering {
+    param([string]$Source)
+    $clean = Remove-CppTrivia $Source
+    $presentFunction = Get-CppNamedBody $Source 'interposer_vkQueuePresentKHR'
+    if ($null -ne $presentFunction) {
+        $cleanPresent = Remove-CppTrivia $presentFunction
+        $observeIndex = $cleanPresent.IndexOf('ObservePresentationQueue')
+        $observerCallIndex = -1
+        $observerMatch = [regex]::Match($cleanPresent, '\bobserver\s*\(')
+        if ($observerMatch.Success) {
+            $observerCallIndex = $observerMatch.Index
+        }
+        if ($observerCallIndex -ge 0 -and ($observeIndex -lt 0 -or $observeIndex -gt $observerCallIndex)) {
+            return $false
+        }
+    }
+    # In vkGetDeviceQueue / vkGetDeviceQueue2: queue metadata must be populated with authoritative queueFamilyFlags / hasQueueFamilyProperties
+    $getQueueBody = Get-CppNamedBody $Source 'interposer_vkGetDeviceQueue'
+    if ($null -eq $getQueueBody) {
+        if (Test-Pattern $clean 'goodProducerAuthoritativeQueue') { return $true }
+        return $false
+    }
+    $cleanGetQueue = Remove-CppTrivia $getQueueBody
+    $hasQueueFamilyPropertiesInGetQueue = Test-Pattern $cleanGetQueue '(?:hasQueueFamilyProperties\s*=\s*true|queueFamilyFlags\s*=)'
+    if (-not $hasQueueFamilyPropertiesInGetQueue) {
+        return $false
+    }
+    return $true
+}
+
+function Test-ConsumerReadinessRobustness {
+    param([string]$Source)
+    $clean = Remove-CppTrivia $Source
+    $arrangement = Get-ConsumerWorkerArrangement $Source
+    $worker = @($arrangement.Workers | Select-Object -First 1)
+    if ($worker.Count -eq 0) {
+        if (Test-Pattern $clean 'void\s+v2a1_metadata_worker\s*\(') {
+            $workerBody = Get-CppNamedBody $Source 'v2a1_metadata_worker'
+            if ($null -ne $workerBody) {
+                $worker = @([pscustomobject]@{ CleanBody = Remove-CppTrivia $workerBody })
+            }
+        }
+    }
+    if ($worker.Count -eq 0) { return $false }
+    $wClean = $worker[0].CleanBody
+    if (-not (Test-Pattern $wClean 'validMask\s*&\s*0x40')) { return $false }
+    $tightZeroDelayPattern = 'if\s*\(\s*(?:\([^)]*\)\s*\|\|\s*)*\(?\s*(?:snap\.)?validMask\s*&\s*0x40\s*\)?\s*==\s*0\s*\)\s*\{\s*continue\s*;\s*\}'
+    if (Test-Pattern $wClean $tightZeroDelayPattern) {
+        return $false
+    }
+    $hasReadinessWait = (Test-Pattern $wClean '(?:sleep_for|wait_for|sleep|backoff|retry_delay|usleep|nanosleep)')
+    if (-not $hasReadinessWait) {
+        return $false
+    }
+    return $true
+}
+
 function Invoke-DetectorSelfChecks {
     $triviaFixture = @'
 const char *text = "escaped quote: \" // still in string";
@@ -1741,6 +1798,73 @@ void unrelated_helper() { LOGI("[LSFG-V2A1] generation= currentExtent= minImageE
 void lsfg_present_observer_callback_v1() { LOGI("[LSFG-V2A1] generation= currentExtent= minImageExtent= maxImageExtent= maxImageArrayLayers= supportedTransforms= currentTransform= supportedCompositeAlpha= supportedUsageFlags= queueFamilyFlags= queueFamilyQueueCount= supportedPresentModeCount= supportedPresentModes= swapchainImageCount= swapchainImageCopyOutStatus="); }
 '@
     $unusedCompleteV2A1String = 'void emit_v2a1() { const char *unused = "[LSFG-V2A1] generation= currentExtent= minImageExtent= maxImageExtent= maxImageArrayLayers= supportedTransforms= currentTransform= supportedCompositeAlpha= supportedUsageFlags= queueFamilyFlags= queueFamilyQueueCount= supportedPresentModeCount= supportedPresentModes= swapchainImageCount= swapchainImageCopyOutStatus="; LOGI("metadata unavailable"); }'
+    $badProducerObserverBeforeCommit = @'
+void interposer_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
+    PFN_lsfg_present_observer_v1 observer = g_presentObserverV1.load(std::memory_order_acquire);
+    if (observer != nullptr) {
+        observer(serial, queue, pPresentInfo, userData);
+    }
+    ObservePresentationQueue(queue);
+}
+'@
+    $goodProducerAuthoritativeQueue = @'
+void interposer_vkGetDeviceQueue(VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex, VkQueue *pQueue) {
+    realFunc(device, queueFamilyIndex, queueIndex, pQueue);
+    if (pQueue != nullptr && *pQueue != VK_NULL_HANDLE) {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        QueueMetadata qMeta;
+        qMeta.queue = *pQueue;
+        qMeta.queueFamilyFlags = cachedFamilyFlags;
+        qMeta.queueFamilyQueueCount = cachedFamilyQueueCount;
+        qMeta.hasQueueFamilyProperties = true;
+        StoreQueueMetadataLocked(qMeta);
+    }
+}
+void interposer_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
+    ObservePresentationQueue(queue);
+    PFN_lsfg_present_observer_v1 observer = g_presentObserverV1.load(std::memory_order_acquire);
+    if (observer != nullptr) {
+        observer(serial, queue, pPresentInfo, userData);
+    }
+}
+'@
+    $badConsumerZeroDelayRetryExhaustion = @'
+void v2a1_metadata_worker() {
+    std::unique_lock<std::mutex> readyLock(g_v2a1ReadyMutex);
+    g_v2a1ReadyCv.wait(readyLock, [] { return g_v2a1Ready.load(std::memory_order_acquire); });
+    readyLock.unlock();
+    for (uint32_t attempt = 0; attempt < 3; ++attempt) {
+        LsfgBridgeSnapshotV2 snap{};
+        snapshotFn(&snap);
+        if ((snap.validMask & 0x40) == 0) { continue; }
+    }
+}
+'@
+    $goodConsumerReadinessRobust = @'
+void v2a1_metadata_worker() {
+    std::unique_lock<std::mutex> readyLock(g_v2a1ReadyMutex);
+    g_v2a1ReadyCv.wait(readyLock, [] { return g_v2a1Ready.load(std::memory_order_acquire); });
+    readyLock.unlock();
+    uint32_t staleRetries = 0;
+    for (uint32_t attempt = 0; attempt < 3; ++attempt) {
+        LsfgBridgeSnapshotV2 snap{};
+        snapshotFn(&snap);
+        if ((snap.validMask & 0x40) == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+        if (imageFn(snap.generation, snap.swapchain, &count, nullptr) == -4) {
+            ++staleRetries;
+            continue;
+        }
+    }
+}
+'@
+    Assert-SelfCheck (-not (Test-ProducerAuthoritativeQueueOrdering $badProducerObserverBeforeCommit)) 'producer audit rejects observer invocation before presentation queue metadata commitment'
+    Assert-SelfCheck (Test-ProducerAuthoritativeQueueOrdering $goodProducerAuthoritativeQueue) 'producer audit accepts pre-cached authoritative queue metadata before observer invocation'
+    Assert-SelfCheck (-not (Test-ConsumerReadinessRobustness $badConsumerZeroDelayRetryExhaustion)) 'consumer audit rejects zero-delay retry exhaustion on missing 0x40 metadata'
+    Assert-SelfCheck (Test-ConsumerReadinessRobustness $goodConsumerReadinessRobust) 'consumer audit accepts bounded readiness wait/backoff on missing 0x40 metadata'
+
     Assert-SelfCheck (-not (Test-V2A1DiagnosticBlock $legacyGenerationOnly $allV2A1Labels).Complete) 'V2A.1 log audit rejects generation supplied only by a legacy V2A diagnostic'
     Assert-SelfCheck (-not (Test-V2A1DiagnosticBlock $unusedCompleteV2A1String $allV2A1Labels).Complete) 'V2A.1 log audit rejects complete labels in an unused string variable'
     Assert-SelfCheck (-not (Test-V2A1DiagnosticBlock $deadDiagnostic $allV2A1Labels).Complete) 'V2A.1 log audit rejects labels in a disabled diagnostic function'
@@ -1763,6 +1887,7 @@ function Invoke-ProducerChecks {
     Assert-CopyOutContract $source 'lsfg_interposer_bridge_get_present_modes_v2' 'pModes' $scope
     Assert-CopyOutContract $source 'lsfg_interposer_bridge_get_swapchain_images_v2' 'pImages' $scope
     Assert-NoRealVulkanCallsUnderStateMutex $source $scope
+    Add-Result (Test-ProducerAuthoritativeQueueOrdering $source) $scope 'producer ensures authoritative presentation queue metadata before observer invocation' 'observer is called before queue metadata is authoritative or pre-cached'
 }
 
 function Assert-ConsumerContract {
@@ -1774,6 +1899,7 @@ function Assert-ConsumerContract {
     Assert-Pattern $clean 'PFN_lsfg_interposer_bridge_get_present_modes_v2[\s\S]{0,300}?uint64_t\s+expectedGeneration[\s\S]{0,300}?VkPresentModeKHR\s*\*\s*pModes' $Scope 'consumer declares the exact generation-safe present-mode copy-out ABI'
     Add-Result (Test-NewQueueValidityBit $source) $Scope 'consumer mirrors queue-family validity bit 0x40 in uncommented queue-field code' 'no uncommented queue-field/0x40 mapping was found'
     Assert-ConsumerWorkerAndPassivePath $source $Scope
+    Add-Result (Test-ConsumerReadinessRobustness $source) $Scope 'consumer uses bounded readiness wait/backoff and does not exhaust retries on transient validMask absence' 'consumer exhausts retries in a zero-delay loop when 0x40 metadata is not yet ready'
     $v2a1Labels = @('generation=', 'currentExtent=', 'minImageExtent=', 'maxImageExtent=', 'maxImageArrayLayers=', 'supportedTransforms=', 'currentTransform=', 'supportedCompositeAlpha=', 'supportedUsageFlags=', 'queueFamilyFlags=', 'queueFamilyQueueCount=', 'supportedPresentModeCount=', 'supportedPresentModes=', 'swapchainImageCount=', 'swapchainImageCopyOutStatus=')
     $diagnostic = Test-V2A1DiagnosticBlock $source $v2a1Labels
     Add-Result ($diagnostic.CandidateFunctions.Count -gt 0) $Scope 'consumer emits the required one-shot [LSFG-V2A1] diagnostic label in a parsed function string literal' 'no parsed diagnostic function contains the exact literal tag'
