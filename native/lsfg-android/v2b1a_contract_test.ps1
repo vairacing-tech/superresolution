@@ -128,12 +128,12 @@ function Test-V2B1ExtraAcquire {
     param([string]$Source)
     $presentFn = Get-CppFunctionBody $Source 'interposer_vkQueuePresentKHR'
     if ($null -eq $presentFn) { return $false }
-    
-    # Must call realAcquireNextImageKHR with timeout=0 and extraAcquireSemaphore
-    $hasExtraAcquire = ($presentFn -match 'realAcquireNextImage\s*\([^,]+,[^,]+,\s*0\s*,[^,]*extraAcquireSemaphore')
+
+    # Must call acquire with timeout=0 and extraAcquireSemaphore
+    $hasExtraAcquire = ($presentFn -match '(\.acquire|realAcquireNextImage)\s*\([^,]+,[^,]+,\s*0\s*,[^,]*extraAcquireSemaphore')
     $handlesNotReady = ($presentFn -match 'VK_NOT_READY')
     $handlesTimeout = ($presentFn -match 'VK_TIMEOUT')
-    
+
     return ($hasExtraAcquire -and $handlesNotReady -and $handlesTimeout)
 }
 
@@ -141,37 +141,44 @@ function Test-V2B1CopyAndPresentationOrdering {
     param([string]$Source)
     $presentFn = Get-CppFunctionBody $Source 'interposer_vkQueuePresentKHR'
     if ($null -eq $presentFn) { return $false }
-    
-    # Check index of operations:
-    # 1. Extra acquire
-    # 2. Copy command / submit
-    # 3. Present M
-    # 4. Present N
-    $idxAcquire = $presentFn.IndexOf('realAcquireNextImage')
-    $idxCopyCmd = $presentFn.IndexOf('vkCmdCopyImage')
-    $idxSubmit = $presentFn.IndexOf('realQueueSubmit')
-    $idxPresentGen = $presentFn.IndexOf('generatedPresentReady')
-    $idxPresentReal = $presentFn.IndexOf('realPresentReady')
-    
-    if ($idxAcquire -lt 0 -or $idxSubmit -lt 0 -or $idxPresentGen -lt 0 -or $idxPresentReal -lt 0) {
-        return $false
-    }
-    
-    # Order must be: Acquire -> Submit -> Present M (generatedPresentReady) -> Present N (realPresentReady)
-    $validOrder = ($idxAcquire -lt $idxSubmit) -and ($idxSubmit -lt $idxPresentGen) -and ($idxPresentGen -lt $idxPresentReal)
-    return $validOrder
+
+    $matchAcquire = [regex]::Match($presentFn, '(\.acquire|realAcquireNextImage)\s*\([^;]+extraAcquireSemaphore')
+    if (-not $matchAcquire.Success) { return $false }
+    $idxAcquire = $matchAcquire.Index
+
+    $afterAcquire = $presentFn.Substring($idxAcquire)
+    $matchCopy = [regex]::Match($afterAcquire, '(\.cmdCopyImage|vkCmdCopyImage|realCmdCopyImage)\s*\(')
+    if (-not $matchCopy.Success) { return $false }
+    $idxCopy = $idxAcquire + $matchCopy.Index
+
+    $afterCopy = $presentFn.Substring($idxCopy)
+    $matchSubmit = [regex]::Match($afterCopy, '(\.queueSubmit|realQueueSubmit)\s*\(')
+    if (-not $matchSubmit.Success) { return $false }
+    $idxSubmit = $idxCopy + $matchSubmit.Index
+
+    $afterSubmit = $presentFn.Substring($idxSubmit)
+    $matchGen = [regex]::Match($afterSubmit, 'generatedPresentReady')
+    if (-not $matchGen.Success) { return $false }
+    $idxGen = $idxSubmit + $matchGen.Index
+
+    $afterGen = $presentFn.Substring($idxGen)
+    $matchReal = [regex]::Match($afterGen, 'realPresentReady')
+    if (-not $matchReal.Success) { return $false }
+    $idxReal = $idxGen + $matchReal.Index
+
+    return ($idxAcquire -lt $idxCopy -and $idxCopy -lt $idxSubmit -and $idxSubmit -lt $idxGen -and $idxGen -lt $idxReal)
 }
 
 function Test-V2B1SingleConsumptionSemaphores {
     param([string]$Source)
     $presentFn = Get-CppFunctionBody $Source 'interposer_vkQueuePresentKHR'
     if ($null -eq $presentFn) { return $false }
-    
+
     # Submit must wait on app render semaphores (pWaitSemaphores from pPresentInfo)
-    $submitWaitsApp = ($presentFn -match 'pWaitSemaphores') -and ($presentFn -match 'realQueueSubmit')
+    $submitWaitsApp = ($presentFn -match 'pWaitSemaphores') -and ($presentFn -match '(\.queueSubmit|realQueueSubmit)')
     # Original present of N must NOT pass caller's pWaitSemaphores, but realPresentReady
     $realPresentUsesRealReady = ($presentFn -match 'realPresentReady')
-    
+
     return ($submitWaitsApp -and $realPresentUsesRealReady)
 }
 
@@ -179,12 +186,12 @@ function Test-V2B1CallerResultsPreservation {
     param([string]$Source)
     $presentFn = Get-CppFunctionBody $Source 'interposer_vkQueuePresentKHR'
     if ($null -eq $presentFn) { return $false }
-    
+
     # Generated present M must use a local VkResult storage
     $hasLocalResultM = ($presentFn -match 'localResult|localGenResult|resM')
     # N present preserves caller pResults
     $preservesCallerResults = ($presentFn -match 'pResults')
-    
+
     return ($hasLocalResultM -and $preservesCallerResults)
 }
 
@@ -193,10 +200,10 @@ function Test-V2B1SingleShotLimiter {
     $clean = Remove-CppTrivia $Source
     $presentFn = Get-CppFunctionBody $Source 'interposer_vkQueuePresentKHR'
     if ($null -eq $presentFn) { return $false }
-    
+
     $declaresFlag = ($clean -match 'std::atomic<bool>\s+g_v2b1aCompleted')
     $setsCompleted = ($presentFn -match 'g_v2b1aCompleted\s*\.\s*store\s*\(\s*true')
-    
+
     return ($declaresFlag -and $setsCompleted)
 }
 
@@ -204,10 +211,10 @@ function Test-V2B1PostCommitRecovery {
     param([string]$Source)
     $presentFn = Get-CppFunctionBody $Source 'interposer_vkQueuePresentKHR'
     if ($null -eq $presentFn) { return $false }
-    
+
     $handlesDeviceLost = ($presentFn -match 'VK_ERROR_DEVICE_LOST')
     $hasRecoveryPath = ($presentFn -match 'recoveryCommandBuffer|recoveryPresentReady|v2b1PostCommitFailure')
-    
+
     return ($handlesDeviceLost -and $hasRecoveryPath)
 }
 
@@ -215,7 +222,7 @@ function Test-V2B1SummaryCounters {
     param([string]$Source)
     $summaryFn = Get-CppFunctionBody $Source 'lsfg_interposer_log_summary'
     if ($null -eq $summaryFn) { return $false }
-    
+
     $requiredLabels = @('v2b1Gate', 'v2b1Eligible', 'v2b1ExtraAcquireAttempt', 'v2b1ExtraAcquireSuccess', 'v2b1CopySubmit', 'v2b1GeneratedPresent', 'v2b1OriginalPresent', 'v2b1PostCommitFailure', 'v2b1Fallback')
     foreach ($label in $requiredLabels) {
         if (-not ($summaryFn -match [regex]::Escape($label))) {
@@ -228,20 +235,23 @@ function Test-V2B1SummaryCounters {
 function Test-V2B1ZeroRealVulkanUnderMutex {
     param([string]$Source)
     $clean = Remove-CppTrivia $Source
-    
+
     # Find all std::lock_guard<std::mutex> lock(g_stateMutex); blocks
     $pattern = 'std::lock_guard<std::mutex>\s+\w+\s*\(\s*g_stateMutex\s*\)\s*;'
     $matches = [regex]::Matches($clean, $pattern)
-    
-    $vulkanDriverCalls = @('realFunc', 'realAcquire', 'realQueueSubmit', 'realQueuePresent', 'realCreateSwapchain', 'realGetModes', 'realGetCaps')
-    
+
+    $vulkanDriverCalls = @('realFunc\(', 'realAcquire\(', 'realQueueSubmit\(', 'realQueuePresent\(', 'realCreateSwapchain\(', 'realGetModes\(', 'realGetCaps\(')
+
     foreach ($m in $matches) {
         $idx = $m.Index
-        # Find enclosing scope or subsequent 300 chars
         $scope = $clean.Substring($idx, [Math]::Min(500, $clean.Length - $idx))
-        foreach ($call in $vulkanDriverCalls) {
-            if ($scope -match [regex]::Escape($call) -and $scope.IndexOf('}') -gt $scope.IndexOf($call)) {
-                return $false
+        $braceIdx = $scope.IndexOf('}')
+        if ($braceIdx -gt 0) {
+            $lockBlock = $scope.Substring(0, $braceIdx)
+            foreach ($call in $vulkanDriverCalls) {
+                if ($lockBlock -match [regex]::Escape($call)) {
+                    return $false
+                }
             }
         }
     }
