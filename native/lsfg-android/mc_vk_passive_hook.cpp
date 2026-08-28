@@ -4,10 +4,15 @@
 #include <android/log.h>
 #include <atomic>
 #include <cinttypes>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <type_traits>
+#include <vector>
 
 #define LOG_TAG "LSFG-PROBE"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
@@ -139,6 +144,10 @@ struct LsfgBridgeSnapshotV2 {
     VkPresentModeKHR supportedPresentModes[LSFG_BRIDGE_MAX_PRESENT_MODES];
 
     uint32_t validMask;
+
+    // V2A.1 append-only queue-family capability fields
+    VkQueueFlags queueFamilyFlags;
+    uint32_t queueFamilyQueueCount;
 };
 
 #define LSFG_BRIDGE_SNAPSHOT_V2_MIN_SIZE (static_cast<uint32_t>(offsetof(LsfgBridgeSnapshotV2, requestedMinImageCount)))
@@ -154,54 +163,233 @@ typedef int32_t (*PFN_lsfg_interposer_unregister_present_observer_v1)(
 typedef int32_t (*PFN_lsfg_interposer_bridge_get_snapshot_v2)(
     LsfgBridgeSnapshotV2 *outSnapshot
 );
+typedef int32_t (*PFN_lsfg_interposer_bridge_get_swapchain_images_v2)(
+    uint64_t expectedGeneration,
+    VkSwapchainKHR swapchain,
+    uint32_t *pCount,
+    VkImage *pImages
+);
+typedef int32_t (*PFN_lsfg_interposer_bridge_get_present_modes_v2)(
+    uint64_t expectedGeneration,
+    VkSwapchainKHR swapchain,
+    uint32_t *pCount,
+    VkPresentModeKHR *pModes
+);
 
 std::atomic<uint64_t> g_bridgeCallbackCount{0};
 std::atomic<uint64_t> g_bridgeLastSerial{0};
 std::atomic<bool> g_firstBridgeCallbackLogged{false};
 std::atomic<PFN_lsfg_interposer_bridge_get_snapshot_v2> g_getSnapshotV2Fn{nullptr};
-std::atomic<bool> g_v2aLogged{false};
+std::atomic<PFN_lsfg_interposer_bridge_get_swapchain_images_v2> g_getSwapchainImagesV2Fn{nullptr};
+std::atomic<PFN_lsfg_interposer_bridge_get_present_modes_v2> g_getPresentModesV2Fn{nullptr};
+std::atomic<bool> g_v2a1Logged{false};
+std::atomic<bool> g_v2a1WorkerStarted{false};
+std::atomic<bool> g_v2a1Ready{false};
+std::mutex g_v2a1ReadyMutex;
+std::condition_variable g_v2a1ReadyCv;
 std::atomic<bool> g_v1ProbeEnabled{false};
 std::atomic<bool> g_v2ProbeEnabled{false};
 
-static void log_v2a_snapshot(const LsfgBridgeSnapshotV2 &snap) {
-    if (g_v2aLogged.exchange(true)) return;
-
-    LOGI("[LSFG-V2A] device=%p physDev=%p instance=%p", snap.device, snap.physicalDevice, snap.instance);
-    LOGI("[LSFG-V2A] queueFamily=%u queueIndex=%u queue=%p", snap.queueFamilyIndex, snap.queueIndex, snap.presentQueue);
-    LOGI("[LSFG-V2A] swapchain=%" PRIu64 " surface=%" PRIu64, (uint64_t)snap.swapchain, (uint64_t)snap.surface);
-    LOGI("[LSFG-V2A] extent=%ux%u format=%d colorSpace=%d", snap.imageExtent.width, snap.imageExtent.height, (int)snap.imageFormat, (int)snap.imageColorSpace);
-    LOGI("[LSFG-V2A] requestedImages=%u actualImages=%u", snap.requestedMinImageCount, snap.actualImageCount);
-    LOGI("[LSFG-V2A] usage=0x%x sharingMode=%d", (uint32_t)snap.imageUsage, (int)snap.imageSharingMode);
-    LOGI("[LSFG-V2A] presentMode=%d", (int)snap.presentMode);
-    LOGI("[LSFG-V2A] surface minImages=%u maxImages=%u", snap.surfaceCapabilities.minImageCount, snap.surfaceCapabilities.maxImageCount);
-    LOGI("[LSFG-V2A] supportedUsage=0x%x", (uint32_t)snap.surfaceCapabilities.supportedUsageFlags);
-    LOGI("[LSFG-V2A] generation=%" PRIu64, snap.generation);
-
-    printf("[LSFG-V2A] device=%p physDev=%p instance=%p\n", snap.device, snap.physicalDevice, snap.instance);
-    printf("[LSFG-V2A] queueFamily=%u queueIndex=%u queue=%p\n", snap.queueFamilyIndex, snap.queueIndex, snap.presentQueue);
-    printf("[LSFG-V2A] swapchain=%" PRIu64 " surface=%" PRIu64 "\n", (uint64_t)snap.swapchain, (uint64_t)snap.surface);
-    printf("[LSFG-V2A] extent=%ux%u format=%d colorSpace=%d\n", snap.imageExtent.width, snap.imageExtent.height, (int)snap.imageFormat, (int)snap.imageColorSpace);
-    printf("[LSFG-V2A] requestedImages=%u actualImages=%u\n", snap.requestedMinImageCount, snap.actualImageCount);
-    printf("[LSFG-V2A] usage=0x%x sharingMode=%d\n", (uint32_t)snap.imageUsage, (int)snap.imageSharingMode);
-    printf("[LSFG-V2A] presentMode=%d\n", (int)snap.presentMode);
-    printf("[LSFG-V2A] surface minImages=%u maxImages=%u\n", snap.surfaceCapabilities.minImageCount, snap.surfaceCapabilities.maxImageCount);
-    printf("[LSFG-V2A] supportedUsage=0x%x\n", (uint32_t)snap.surfaceCapabilities.supportedUsageFlags);
-    printf("[LSFG-V2A] generation=%" PRIu64 "\n", snap.generation);
-    fflush(stdout);
+template <typename T>
+static uint64_t bridge_handle_to_u64(T handle) {
+    if constexpr (std::is_pointer_v<T>) {
+        return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(handle));
+    } else {
+        return static_cast<uint64_t>(handle);
+    }
 }
 
-static void try_query_v2a_snapshot() {
-    if (!g_v2ProbeEnabled.load(std::memory_order_relaxed)) return;
+static const char *present_mode_name(VkPresentModeKHR mode) {
+    switch (mode) {
+        case VK_PRESENT_MODE_IMMEDIATE_KHR: return "VK_PRESENT_MODE_IMMEDIATE_KHR";
+        case VK_PRESENT_MODE_MAILBOX_KHR: return "VK_PRESENT_MODE_MAILBOX_KHR";
+        case VK_PRESENT_MODE_FIFO_KHR: return "VK_PRESENT_MODE_FIFO_KHR";
+        case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return "VK_PRESENT_MODE_FIFO_RELAXED_KHR";
+        default: return nullptr;
+    }
+}
 
-    auto fn = g_getSnapshotV2Fn.load(std::memory_order_relaxed);
-    if (fn != nullptr && !g_v2aLogged.load(std::memory_order_relaxed)) {
+static void log_v2a1_diagnostic(
+    const LsfgBridgeSnapshotV2 &snap,
+    const std::vector<VkImage> &images,
+    const std::vector<VkPresentModeKHR> &presentModes,
+    int32_t imageCountStatus,
+    int32_t imageCopyOutStatus,
+    int32_t presentModeCountStatus,
+    int32_t presentModeCopyOutStatus,
+    uint32_t attempt,
+    uint32_t staleRetries) {
+    if (g_v2a1Logged.exchange(true)) return;
+
+    const uint32_t queueFamilyFlags = static_cast<uint32_t>(snap.queueFamilyFlags);
+    const uint32_t knownQueueFlags =
+        VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT | VK_QUEUE_SPARSE_BINDING_BIT;
+    const uint32_t additionalQueueFlags = queueFamilyFlags & ~knownQueueFlags;
+    const uint32_t imageCount = static_cast<uint32_t>(images.size());
+    const uint32_t presentModeCount = static_cast<uint32_t>(presentModes.size());
+
+    LOGI("[LSFG-V2A1] generation=%" PRIu64
+         " currentExtent=%ux%u minImageExtent=%ux%u maxImageExtent=%ux%u"
+         " maxImageArrayLayers=%u supportedTransforms=0x%x currentTransform=0x%x"
+         " supportedCompositeAlpha=0x%x supportedUsageFlags=0x%x"
+         " queueFamilyFlags=0x%x graphics=%u compute=%u transfer=%u sparse=%u"
+         " additionalQueueFlags=0x%x queueFamilyQueueCount=%u"
+         " supportedPresentModeCount=%u supportedPresentModes=%u"
+         " swapchainImageCount=%u swapchainImageCopyOutStatus=%d"
+         " presentModeCountStatus=%d presentModeCopyOutStatus=%d"
+         " attempt=%u retryCount=%u staleRetries=%u",
+         snap.generation,
+         snap.imageExtent.width, snap.imageExtent.height,
+         snap.surfaceCapabilities.minImageExtent.width, snap.surfaceCapabilities.minImageExtent.height,
+         snap.surfaceCapabilities.maxImageExtent.width, snap.surfaceCapabilities.maxImageExtent.height,
+         snap.surfaceCapabilities.maxImageArrayLayers,
+         static_cast<uint32_t>(snap.surfaceCapabilities.supportedTransforms),
+         static_cast<uint32_t>(snap.surfaceCapabilities.currentTransform),
+         static_cast<uint32_t>(snap.surfaceCapabilities.supportedCompositeAlpha),
+         static_cast<uint32_t>(snap.surfaceCapabilities.supportedUsageFlags),
+         queueFamilyFlags,
+         (queueFamilyFlags & VK_QUEUE_GRAPHICS_BIT) != 0,
+         (queueFamilyFlags & VK_QUEUE_COMPUTE_BIT) != 0,
+         (queueFamilyFlags & VK_QUEUE_TRANSFER_BIT) != 0,
+         (queueFamilyFlags & VK_QUEUE_SPARSE_BINDING_BIT) != 0,
+         additionalQueueFlags,
+         snap.queueFamilyQueueCount,
+         snap.supportedPresentModeCount,
+         presentModeCount,
+         imageCount,
+         imageCopyOutStatus,
+         presentModeCountStatus,
+         presentModeCopyOutStatus,
+         attempt,
+         attempt > 0 ? attempt - 1 : 0,
+         staleRetries);
+
+    LOGI("[LSFG-V2A1] handles instance=%p physicalDevice=%p device=%p queue=%p swapchain=%" PRIu64 " surface=%" PRIu64
+         " imageCountStatus=%d",
+         snap.instance, snap.physicalDevice, snap.device, snap.presentQueue,
+         bridge_handle_to_u64(snap.swapchain), bridge_handle_to_u64(snap.surface), imageCountStatus);
+
+    for (const VkPresentModeKHR mode : presentModes) {
+        const char *name = present_mode_name(mode);
+        if (name != nullptr) {
+            LOGI("[LSFG-V2A1] supportedPresentModes=%s numeric=%u", name, static_cast<uint32_t>(mode));
+        } else {
+            LOGI("[LSFG-V2A1] supportedPresentModes=UNKNOWN numeric=%u", static_cast<uint32_t>(mode));
+        }
+    }
+}
+
+static void v2a1_metadata_worker() {
+    std::unique_lock<std::mutex> readyLock(g_v2a1ReadyMutex);
+    g_v2a1ReadyCv.wait(readyLock, [] {
+        return g_v2a1Ready.load(std::memory_order_acquire);
+    });
+    readyLock.unlock();
+
+    PFN_lsfg_interposer_bridge_get_snapshot_v2 snapshotFn =
+        g_getSnapshotV2Fn.load(std::memory_order_acquire);
+    PFN_lsfg_interposer_bridge_get_swapchain_images_v2 imageFn =
+        g_getSwapchainImagesV2Fn.load(std::memory_order_acquire);
+    PFN_lsfg_interposer_bridge_get_present_modes_v2 presentModeFn =
+        g_getPresentModesV2Fn.load(std::memory_order_acquire);
+    if (snapshotFn == nullptr || imageFn == nullptr || presentModeFn == nullptr) {
+        return;
+    }
+
+    uint32_t staleRetries = 0;
+    for (uint32_t attempt = 0; attempt < 3; ++attempt) {
         LsfgBridgeSnapshotV2 snap{};
         snap.abiVersion = LSFG_BRIDGE_ABI_VERSION_V2;
         snap.structSize = sizeof(LsfgBridgeSnapshotV2);
-        int32_t res = fn(&snap);
-        if (res == 0 && (snap.validMask & 0x04) != 0) { // swapchain valid
-            log_v2a_snapshot(snap);
+        int32_t snapshotStatus = snapshotFn(&snap);
+        if (snapshotStatus != 0 || (snap.validMask & 0x04) == 0 ||
+            (snap.validMask & 0x10) == 0 || (snap.validMask & 0x40) == 0) {
+            continue;
         }
+        if ((snap.validMask & 0x40) != 0) {
+            const VkQueueFlags observedQueueFlags = snap.queueFamilyFlags;
+            const uint32_t observedQueueCount = snap.queueFamilyQueueCount;
+            if (observedQueueFlags == 0 && observedQueueCount == 0) {
+                continue;
+            }
+        }
+
+        const uint64_t generation = snap.generation;
+        uint32_t imageCount = 0;
+        int32_t imageCountStatus = imageFn(generation, snap.swapchain, &imageCount, nullptr);
+        if (imageCountStatus == -4) {
+            ++staleRetries;
+            continue;
+        }
+        if (imageCountStatus != 0 || imageCount == 0 || snap.actualImageCount != imageCount) {
+            continue;
+        }
+
+        std::vector<VkImage> images(imageCount);
+        uint32_t imageCopyOutCount = imageCount;
+        int32_t imageCopyOutStatus = imageFn(
+            generation, snap.swapchain, &imageCopyOutCount, images.data());
+        if (imageCopyOutStatus == -4) {
+            ++staleRetries;
+            continue;
+        }
+        if (imageCopyOutStatus != 0 || imageCopyOutCount != imageCount) {
+            continue;
+        }
+        bool allImagesNonNull = true;
+        for (const VkImage image : images) {
+            if (image == VK_NULL_HANDLE) {
+                allImagesNonNull = false;
+                break;
+            }
+        }
+        if (!allImagesNonNull) {
+            continue;
+        }
+
+        uint32_t presentModeCount = 0;
+        int32_t presentModeCountStatus = presentModeFn(
+            generation, snap.swapchain, &presentModeCount, nullptr);
+        if (presentModeCountStatus == -4) {
+            ++staleRetries;
+            continue;
+        }
+        if (presentModeCountStatus != 0) {
+            continue;
+        }
+
+        std::vector<VkPresentModeKHR> presentModes(presentModeCount);
+        uint32_t presentModeCopyOutCount = presentModeCount;
+        VkPresentModeKHR emptyMode = VK_PRESENT_MODE_FIFO_KHR;
+        VkPresentModeKHR *presentModeOutput = presentModes.empty() ? &emptyMode : presentModes.data();
+        int32_t presentModeCopyOutStatus = presentModeFn(
+            generation, snap.swapchain, &presentModeCopyOutCount, presentModeOutput);
+        if (presentModeCopyOutStatus == -4) {
+            ++staleRetries;
+            continue;
+        }
+        if (presentModeCopyOutStatus != 0 || presentModeCopyOutCount != presentModeCount) {
+            continue;
+        }
+
+        LsfgBridgeSnapshotV2 verify{};
+        verify.abiVersion = LSFG_BRIDGE_ABI_VERSION_V2;
+        verify.structSize = sizeof(LsfgBridgeSnapshotV2);
+        int32_t verifyStatus = snapshotFn(&verify);
+        if (verifyStatus == -4 || (verifyStatus == 0 && verify.generation != generation)) {
+            ++staleRetries;
+            continue;
+        }
+        if (verifyStatus != 0) {
+            continue;
+        }
+
+        log_v2a1_diagnostic(
+            snap, images, presentModes,
+            imageCountStatus, imageCopyOutStatus,
+            presentModeCountStatus, presentModeCopyOutStatus,
+            attempt + 1, staleRetries);
+        return;
     }
 }
 
@@ -211,24 +399,14 @@ static uint32_t lsfg_present_observer_callback_v1(
     const VkPresentInfoKHR *pPresentInfo,
     void *user_data
 ) {
+    (void)queue;
+    (void)pPresentInfo;
     (void)user_data;
     g_vulkanObserved.store(true, std::memory_order_relaxed);
     g_bridgeCallbackCount.fetch_add(1, std::memory_order_relaxed);
     g_bridgeLastSerial.store(serial, std::memory_order_relaxed);
-
-    if (g_v2ProbeEnabled.load(std::memory_order_relaxed)) {
-        try_query_v2a_snapshot();
-    }
-
-    if (g_v1ProbeEnabled.load(std::memory_order_relaxed) && !g_firstBridgeCallbackLogged.exchange(true)) {
-        uint32_t scCount = (pPresentInfo != nullptr) ? pPresentInfo->swapchainCount : 0;
-        LOGI("[LSFG-BRIDGE] first present callback serial=%" PRIu64 " swapchains=%u",
-             serial, scCount);
-        printf("[LSFG-BRIDGE] first present callback serial=%" PRIu64 " swapchains=%u\n",
-             serial, scCount);
-        fflush(stdout);
-    }
-
+    g_v2a1Ready.store(true, std::memory_order_release);
+    g_v2a1ReadyCv.notify_one();
     return LSFG_BRIDGE_ACK_V1;
 }
 
@@ -523,16 +701,33 @@ void init_passive_vulkan_diagnostics(bool enable_v1_probe, bool enable_v2_probe)
                     }
 
                     if (enable_v2_probe) {
-                        // Discover V2 snapshot export
                         PFN_lsfg_interposer_bridge_get_snapshot_v2 snap_fn =
                             reinterpret_cast<PFN_lsfg_interposer_bridge_get_snapshot_v2>(
                                 dlsym(interposer_handle, "lsfg_interposer_bridge_get_snapshot_v2"));
+                        PFN_lsfg_interposer_bridge_get_swapchain_images_v2 image_fn =
+                            reinterpret_cast<PFN_lsfg_interposer_bridge_get_swapchain_images_v2>(
+                                dlsym(interposer_handle, "lsfg_interposer_bridge_get_swapchain_images_v2"));
+                        PFN_lsfg_interposer_bridge_get_present_modes_v2 present_mode_fn =
+                            reinterpret_cast<PFN_lsfg_interposer_bridge_get_present_modes_v2>(
+                                dlsym(interposer_handle, "lsfg_interposer_bridge_get_present_modes_v2"));
+
                         if (snap_fn != nullptr) {
                             g_getSnapshotV2Fn.store(snap_fn, std::memory_order_release);
                             LOGI("[LSFG-BRIDGE] interposer bridge v2 snapshot export discovered");
                             printf("[LSFG-BRIDGE] interposer bridge v2 snapshot export discovered\n");
                             fflush(stdout);
-                            try_query_v2a_snapshot();
+                        }
+                        if (image_fn != nullptr) {
+                            g_getSwapchainImagesV2Fn.store(image_fn, std::memory_order_release);
+                            LOGI("[LSFG-BRIDGE] interposer bridge v2 image copy-out export discovered");
+                        }
+                        if (present_mode_fn != nullptr) {
+                            g_getPresentModesV2Fn.store(present_mode_fn, std::memory_order_release);
+                            LOGI("[LSFG-BRIDGE] interposer bridge v2 present-mode copy-out export discovered");
+                        }
+                        if (snap_fn != nullptr && image_fn != nullptr && present_mode_fn != nullptr &&
+                            !g_v2a1WorkerStarted.exchange(true)) {
+                            std::thread(v2a1_metadata_worker).detach();
                         }
                     }
                 } else {
