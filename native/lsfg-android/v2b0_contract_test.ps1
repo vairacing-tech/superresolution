@@ -234,8 +234,8 @@ function Test-V2B0SafeCreateInfoOverride {
     $createFn = Get-CppFunctionBody $Source 'interposer_vkCreateSwapchainKHR'
     if ($null -eq $createFn) { return $false }
     
-    # Must declare shallow copy: VkSwapchainCreateInfoKHR ... = *pCreateInfo;
-    $hasShallowCopy = ($createFn -match 'VkSwapchainCreateInfoKHR\s+\w+\s*=\s*\*pCreateInfo\s*;')
+    # Must declare shallow copy: VkSwapchainCreateInfoKHR ... = ...*pCreateInfo...;
+    $hasShallowCopy = ($createFn -match 'VkSwapchainCreateInfoKHR\s+\w+\s*=[^;]*\*\s*pCreateInfo')
     # Must override presentMode = VK_PRESENT_MODE_FIFO_KHR
     $hasFifoOverride = ($createFn -match '\.\s*presentMode\s*=\s*VK_PRESENT_MODE_FIFO_KHR\s*;')
     # Must call real function with pointer to local copy or pCreateInfo
