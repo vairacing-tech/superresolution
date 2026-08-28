@@ -97,11 +97,48 @@ function Remove-CppTrivia {
     return Mask-CppDisabledPreprocessorBlocks (-join $chars)
 }
 
+function Split-CppTopLevelOperator {
+    param([string]$Expression, [string]$Operator)
+    $parts = [System.Collections.Generic.List[string]]::new()
+    $depth = 0
+    $start = 0
+    for ($i = 0; $i -lt $Expression.Length; $i++) {
+        if ($Expression[$i] -eq '(') { $depth++; continue }
+        if ($Expression[$i] -eq ')') { if ($depth -gt 0) { $depth-- }; continue }
+        if ($depth -eq 0 -and $i + $Operator.Length -le $Expression.Length -and $Expression.Substring($i, $Operator.Length) -eq $Operator) {
+            $parts.Add($Expression.Substring($start, $i - $start).Trim())
+            $start = $i + $Operator.Length
+            $i += $Operator.Length - 1
+        }
+    }
+    if ($parts.Count -eq 0) { return @($Expression) }
+    $parts.Add($Expression.Substring($start).Trim())
+    return @($parts)
+}
+
 function Test-CppPreprocessorExpressionEnabled {
     param([string]$Expression)
     $normalized = $Expression.Trim()
     while ($normalized -match '^\(\s*(?<inner>[\s\S]*)\s*\)$') { $normalized = $Matches['inner'].Trim() }
     if ($normalized -match '^0(?:[uUlL]*)$') { return $false }
+
+    $andParts = @(Split-CppTopLevelOperator $normalized '&&')
+    if ($andParts.Count -gt 1) {
+        foreach ($part in $andParts) {
+            if (-not (Test-CppPreprocessorExpressionEnabled $part)) { return $false }
+        }
+        return $true
+    }
+
+    $orParts = @(Split-CppTopLevelOperator $normalized '||')
+    if ($orParts.Count -gt 1) {
+        foreach ($part in $orParts) {
+            if (Test-CppPreprocessorExpressionEnabled $part) { return $true }
+        }
+        return $false
+    }
+
+    if ($normalized -match '^!\s*0(?:[uUlL]*)$') { return $true }
     return $true
 }
 
@@ -355,18 +392,34 @@ function Assert-V2AbiLayout {
     Add-Result $layout.Append $Scope 'VkQueueFlags queueFamilyFlags and uint32_t queueFamilyQueueCount append immediately after validMask' 'the exact V2A.1 append order is absent'
 }
 
+function Get-ExactPresentModesParametersPattern {
+    return '\s*uint64_t\s+expectedGeneration\s*,\s*VkSwapchainKHR\s+swapchain\s*,\s*uint32_t\s*\*\s*pCount\s*,\s*VkPresentModeKHR\s*\*\s*pModes\s*'
+}
+
 function Test-ExactPresentModesSignature {
     param([string]$Source)
     $clean = Remove-CppTrivia $Source
-    $parameters = '\s*uint64_t\s+expectedGeneration\s*,\s*VkSwapchainKHR\s+swapchain\s*,\s*uint32_t\s*\*\s*pCount\s*,\s*VkPresentModeKHR\s*\*\s*pModes\s*'
-    $producer = "\blsfg_interposer_bridge_get_present_modes_v2\s*\($parameters\)"
+    $parameters = Get-ExactPresentModesParametersPattern
     $consumerTypedef = "\btypedef\s+int32_t\s*\(\s*\*\s*PFN_lsfg_interposer_bridge_get_present_modes_v2\s*\)\s*\($parameters\)\s*;"
-    return (Test-Pattern $clean $producer) -or (Test-Pattern $clean $consumerTypedef)
+    return Test-Pattern $clean $consumerTypedef
+}
+
+function Test-ExactPresentModesProducerSignature {
+    param([string]$Source)
+    $clean = Remove-CppTrivia $Source
+    $parameters = Get-ExactPresentModesParametersPattern
+    $producer = "\bint32_t\s+lsfg_interposer_bridge_get_present_modes_v2\s*\($parameters\)\s*\{"
+    return Test-Pattern $clean $producer
 }
 
 function Assert-ExactPresentModesSignature {
     param([string]$Source, [string]$Scope)
-    Add-Result (Test-ExactPresentModesSignature $Source) $Scope 'exact present-mode copy-out signature uses expectedGeneration, swapchain, pCount, and pModes' 'neither the exact producer signature nor canonical consumer typedef is present'
+    Add-Result (Test-ExactPresentModesSignature $Source) $Scope 'consumer declares the canonical present-mode copy-out typedef with expectedGeneration, swapchain, pCount, and pModes' 'the exact consumer PFN typedef is absent or structurally different'
+}
+
+function Assert-ExactPresentModesProducerSignature {
+    param([string]$Source, [string]$Scope)
+    Add-Result (Test-ExactPresentModesProducerSignature $Source) $Scope 'producer exposes the exact present-mode copy-out function with expectedGeneration, swapchain, pCount, and pModes' 'the exact producer function signature is absent or structurally different'
 }
 
 function Get-CppStringLiteralTexts {
@@ -402,11 +455,31 @@ function Get-CppStringLiteralTexts {
     return @($literals)
 }
 
+function Get-CppEmittedStringLiteralTexts {
+    param([string]$Source)
+    $clean = Remove-CppTrivia $Source
+    $literals = [System.Collections.Generic.List[string]]::new()
+    $logPattern = '\b(?:LOG[IVDWE]|ALOG[IVDWE]|__android_log_(?:print|write)|printf|fprintf|log)\s*\('
+    foreach ($call in [regex]::Matches($clean, $logPattern)) {
+        $open = $clean.IndexOf('(', $call.Index)
+        if ($open -lt 0) { continue }
+        $close = Get-MatchingParenIndex $clean $open
+        if ($close -lt 0) { continue }
+        $callSource = $Source.Substring($call.Index, $close - $call.Index + 1)
+        foreach ($literal in Get-CppStringLiteralTexts $callSource) { $literals.Add($literal) }
+    }
+    return @($literals)
+}
+
 function Test-V2A1DiagnosticBlock {
     param([string]$Source, [string[]]$RequiredLabels)
     $candidates = [System.Collections.Generic.List[string]]::new()
     foreach ($function in Get-CppFunctionInfos $Source) {
-        $literalText = @(Get-CppStringLiteralTexts $function.Body) -join "`n"
+        if ($function.Name -match '(?i)(?:present|callback)' -and $function.Name -notmatch '(?i)v2a1_metadata') { continue }
+        $hasDiagnosticPathName = $function.Name -match '(?i)(?:v2a1|metadata|snapshot|diagnostic|probe)'
+        $hasOneShotGate = Test-Pattern $function.CleanBody '(?i)(?:v2a1|metadata|snapshot)[A-Za-z0-9_]*(?:diagnostic|logged|log|reported|started)?[A-Za-z0-9_]*\s*\.\s*exchange\s*\(\s*true\s*\)'
+        if (-not $hasDiagnosticPathName -and -not $hasOneShotGate) { continue }
+        $literalText = @(Get-CppEmittedStringLiteralTexts $function.Body) -join "`n"
         if ($literalText -notmatch [regex]::Escape('[LSFG-V2A1]')) { continue }
         $candidates.Add($function.Name)
         $complete = $true
@@ -525,7 +598,8 @@ function Find-RealVulkanCallsUnderStateMutex {
             if ($relativeEnd -le $relativeStart) { continue }
             $lockedBody = $function.CleanBody.Substring($relativeStart, $relativeEnd - $relativeStart)
             $lockedView = [pscustomobject]@{ CleanBody = $lockedBody }
-            $directHelpers = @(Get-CppDirectLocalCallees $lockedView $functions $customCallableTypes)
+            $functionAliases = Get-CppLocalFunctionAliases $function.CleanBody $functions $customCallableTypes
+            $directHelpers = @(Get-CppDirectLocalCallees $lockedView $functions $customCallableTypes $functionAliases)
             foreach ($helper in Get-CppReachableFunctions $functions $directHelpers $customCallableTypes) {
                 foreach ($pfnName in @($pfnNames)) {
                     if (Test-CppCallableInvocation $helper.CleanBody $pfnName) {
@@ -596,27 +670,140 @@ function Get-CallerOutputWrites {
 
 function Test-StaleGenerationMismatchCondition {
     param([string]$Condition)
+    $normalized = $Condition.Trim()
+    while ($normalized -match '^\(\s*(?<inner>[\s\S]*)\s*\)$') { $normalized = $Matches['inner'].Trim() }
+    $parts = @(Split-CppTopLevelOperator $normalized '&&')
+    $hasMismatch = $false
+    foreach ($part in $parts) {
+        $term = $part.Trim()
+        while ($term -match '^\(\s*(?<inner>[\s\S]*)\s*\)$') { $term = $Matches['inner'].Trim() }
+        if ($term -match '^expectedGeneration\s*!=\s*(?<current>[A-Za-z_]\w*(?:(?:\.|->)\s*\w+)*)$' -or
+            $term -match '^(?<current>[A-Za-z_]\w*(?:(?:\.|->)\s*\w+)*)\s*!=\s*expectedGeneration$') {
+            if ($Matches['current'] -notmatch '(?i)(?:generation|gen)') { return $false }
+            if ($hasMismatch) { return $false }
+            $hasMismatch = $true
+            continue
+        }
+        if ($term -match '^expectedGeneration\s*!=\s*0(?:[uUlL]*)$') { continue }
+        return $false
+    }
+    return $hasMismatch
+}
+
+function Get-CopyCountSources {
+    param([string]$TriviaFreeBody)
+    $sources = @{}
+    foreach ($match in [regex]::Matches($TriviaFreeBody, '\b(?<count>[A-Za-z_]\w*)\s*=\s*(?<source>[A-Za-z_]\w*)\s*\.\s*size\s*\(\s*\)\s*;')) {
+        $sources[$match.Groups['count'].Value] = $match.Groups['source'].Value
+    }
+    return $sources
+}
+
+function Test-CopySourceMatchesRequired {
+    param([hashtable]$CountSources, [string]$SourceName, [string]$CountExpression)
+    $source = $SourceName.Trim()
+    $count = [regex]::Replace($CountExpression.Trim(), '\s+', '')
+    if ($count -eq "$source.size()") { return $true }
+    if ($CountSources.ContainsKey($count) -and $CountSources[$count] -eq $source) { return $true }
+    return $false
+}
+
+function Get-CompleteCallerBufferCopyProof {
+    param([string]$TriviaFreeBody, [string]$OutputPointer)
+    $invalid = [pscustomobject]@{ Valid = $false; Source = $null; CountExpression = $null; Kind = $null }
+    $pointer = [regex]::Escape($OutputPointer)
+    $countSources = Get-CopyCountSources $TriviaFreeBody
+    if ($countSources.Count -eq 0) { return $invalid }
+
+    $rangePattern = "\bstd::(?:ranges::)?copy\s*\(\s*(?<source>[A-Za-z_]\w*)\s*\.\s*begin\s*\(\s*\)\s*,\s*\k<source>\s*\.\s*end\s*\(\s*\)\s*,\s*$pointer\b"
+    foreach ($match in [regex]::Matches($TriviaFreeBody, $rangePattern)) {
+        $source = $match.Groups['source'].Value
+        foreach ($countName in @($countSources.Keys)) {
+            if ($countSources[$countName] -eq $source) { return [pscustomobject]@{ Valid = $true; Source = $source; CountExpression = [string]$countName; Kind = 'full-range copy' } }
+        }
+    }
+
+    $containerPattern = "\bstd::ranges::copy\s*\(\s*(?<source>[A-Za-z_]\w*)\s*,\s*$pointer\b"
+    foreach ($match in [regex]::Matches($TriviaFreeBody, $containerPattern)) {
+        $source = $match.Groups['source'].Value
+        foreach ($countName in @($countSources.Keys)) {
+            if ($countSources[$countName] -eq $source) { return [pscustomobject]@{ Valid = $true; Source = $source; CountExpression = [string]$countName; Kind = 'ranges container copy' } }
+        }
+    }
+
+    $copyNPattern = "\bstd::(?:ranges::)?copy_n\s*\(\s*(?<source>[A-Za-z_]\w*)\s*\.\s*begin\s*\(\s*\)\s*,\s*(?<count>[^,]+?)\s*,\s*$pointer\b"
+    foreach ($match in [regex]::Matches($TriviaFreeBody, $copyNPattern)) {
+        $source = $match.Groups['source'].Value
+        $count = $match.Groups['count'].Value.Trim()
+        if (Test-CopySourceMatchesRequired $countSources $source $count) { return [pscustomobject]@{ Valid = $true; Source = $source; CountExpression = $count; Kind = 'copy_n' } }
+    }
+
+    $memcpyPattern = "\b(?:std::)?mem(?:cpy|move)\s*\(\s*(?:&\s*)?$pointer\b[^,]*,\s*(?<source>[A-Za-z_]\w*)\s*\.\s*data\s*\(\s*\)\s*,\s*(?<bytes>[^;]+)\)\s*;"
+    foreach ($match in [regex]::Matches($TriviaFreeBody, $memcpyPattern)) {
+        $source = $match.Groups['source'].Value
+        $bytes = $match.Groups['bytes'].Value
+        foreach ($countName in @($countSources.Keys)) {
+            $countPattern = "\b$([regex]::Escape([string]$countName))\b"
+            if ($countSources[$countName] -eq $source -and (Test-Pattern $bytes $countPattern)) {
+                return [pscustomobject]@{ Valid = $true; Source = $source; CountExpression = [string]$countName; Kind = 'memcpy' }
+            }
+        }
+    }
+
+    $loopPattern = "\bfor\s*\([^;]*?(?<index>[A-Za-z_]\w*)\s*=\s*0(?:u|U)?\s*;\s*\k<index>\s*<\s*(?<count>[A-Za-z_]\w*)\s*;[^)]*\)\s*\{(?<body>[^{}]*)\}"
+    foreach ($loop in [regex]::Matches($TriviaFreeBody, $loopPattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)) {
+        if ($loop.Groups['body'].Value -match '\b(?:break|continue|goto|return|throw)\b') { continue }
+        $index = [regex]::Escape($loop.Groups['index'].Value)
+        $write = [regex]::Match($loop.Groups['body'].Value, "\b$pointer\s*\[\s*$index\s*\]\s*=\s*(?<source>[A-Za-z_]\w*)\s*\[\s*$index\s*\]")
+        if ($write.Success -and (Test-CopySourceMatchesRequired $countSources $write.Groups['source'].Value $loop.Groups['count'].Value)) {
+            return [pscustomobject]@{ Valid = $true; Source = $write.Groups['source'].Value; CountExpression = $loop.Groups['count'].Value; Kind = 'indexed loop' }
+        }
+    }
+    return $invalid
+}
+
+function Test-CompleteCallerBufferCopy {
+    param([string]$TriviaFreeBody, [string]$OutputPointer)
+    return (Get-CompleteCallerBufferCopyProof $TriviaFreeBody $OutputPointer).Valid
+}
+
+function Test-CountExpressionsEquivalent {
+    param([hashtable]$CountSources, [string]$Left, [string]$Right)
+    $leftCompact = [regex]::Replace($Left.Trim(), '\s+', '')
+    $rightCompact = [regex]::Replace($Right.Trim(), '\s+', '')
+    if ($leftCompact -eq $rightCompact) { return $true }
+    $leftSource = $null
+    $rightSource = $null
+    if ($CountSources.ContainsKey($leftCompact)) { $leftSource = $CountSources[$leftCompact] }
+    elseif ($leftCompact -match '^(?<source>[A-Za-z_]\w*)\.size\(\)$') { $leftSource = $Matches['source'] }
+    if ($CountSources.ContainsKey($rightCompact)) { $rightSource = $CountSources[$rightCompact] }
+    elseif ($rightCompact -match '^(?<source>[A-Za-z_]\w*)\.size\(\)$') { $rightSource = $Matches['source'] }
+    return $null -ne $leftSource -and $leftSource -eq $rightSource
+}
+
+function Test-CapacityGuardMatchesCopy {
+    param([string]$Condition, [hashtable]$CountSources, [object]$CopyProof)
+    if ($null -eq $CopyProof -or -not $CopyProof.Valid) { return $false }
+    $normalized = $Condition.Trim()
+    while ($normalized -match '^\(\s*(?<inner>[\s\S]*)\s*\)$') { $normalized = $Matches['inner'].Trim() }
     foreach ($pattern in @(
-        '\bexpectedGeneration\s*!=\s*(?<current>[A-Za-z_]\w*(?:(?:\.|->)\s*\w+)*)',
-        '\b(?<current>[A-Za-z_]\w*(?:(?:\.|->)\s*\w+)*)\s*!=\s*expectedGeneration\b'
+        '^\*\s*pCount\s*<\s*(?<count>[A-Za-z_]\w*(?:\s*\.\s*size\s*\(\s*\))?)$',
+        '^(?<count>[A-Za-z_]\w*(?:\s*\.\s*size\s*\(\s*\))?)\s*>\s*\*\s*pCount$'
     )) {
-        foreach ($match in [regex]::Matches($Condition, $pattern)) {
-            if ($match.Groups['current'].Value -match '(?i)(?:generation|gen)') { return $true }
+        if ($normalized -match $pattern) {
+            return Test-CountExpressionsEquivalent $CountSources $Matches['count'] $CopyProof.CountExpression
         }
     }
     return $false
 }
 
-function Test-CompleteCallerBufferCopy {
-    param([string]$TriviaFreeBody, [string]$OutputPointer)
-    $pointer = [regex]::Escape($OutputPointer)
-    if (Test-Pattern $TriviaFreeBody "\bstd::(?:ranges::)?copy\s*\(\s*(?<container>[A-Za-z_]\w*)\s*\.\s*begin\s*\(\s*\)\s*,\s*\k<container>\s*\.\s*end\s*\(\s*\)\s*,\s*$pointer\b") { return $true }
-    if (Test-Pattern $TriviaFreeBody "\bstd::ranges::copy\s*\(\s*[A-Za-z_]\w*\s*,\s*$pointer\b") { return $true }
-    if (Test-Pattern $TriviaFreeBody "\bstd::(?:ranges::)?copy_n\s*\([^;]*,\s*(?:required|cachedCount|modeCount|imageCount)\s*,\s*$pointer\b") { return $true }
-    if (Test-Pattern $TriviaFreeBody "\b(?:std::)?mem(?:cpy|move)\s*\(\s*(?:&\s*)?$pointer\b[^,]*,[^,]*,\s*(?:(?:required|cachedCount|modeCount|imageCount)\s*\*\s*sizeof\b|sizeof\b[^;]*\*\s*(?:required|cachedCount|modeCount|imageCount))") { return $true }
-    $loopPattern = "\bfor\s*\(\s*(?:[A-Za-z_]\w*(?:::\w+)*(?:\s+|\s*\*\s*))?(?<index>[A-Za-z_]\w*)\s*=\s*0(?:u|U)?\s*;\s*\k<index>\s*<\s*(?:required|cachedCount|modeCount|imageCount)\s*;[^)]*\)\s*\{(?<body>[^{}]*\b$pointer\s*\[\s*\k<index>\s*\]\s*=[^{}]*)\}"
-    foreach ($loop in [regex]::Matches($TriviaFreeBody, $loopPattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)) {
-        if ($loop.Groups['body'].Value -notmatch '\b(?:break|continue|goto|return|throw)\b') { return $true }
+function Test-ReturnedCountMatchesCopy {
+    param([string]$TriviaFreeBody, [int]$FirstDataWrite, [object]$CopyProof)
+    if ($FirstDataWrite -lt 0 -or $null -eq $CopyProof -or -not $CopyProof.Valid) { return $false }
+    $countSources = Get-CopyCountSources $TriviaFreeBody
+    foreach ($match in [regex]::Matches($TriviaFreeBody, '\*\s*pCount\s*=\s*(?<value>[^;]+)\s*;')) {
+        if ($match.Index -le $FirstDataWrite) { continue }
+        if (Test-CountExpressionsEquivalent $countSources $match.Groups['value'].Value $CopyProof.CountExpression) { return $true }
     }
     return $false
 }
@@ -640,15 +827,19 @@ function Get-CopyOutAnalysis {
             if ($staleInside -and $allWritesInside) { $coherent = $true; break }
         }
     }
-    $capacityMatch = [regex]::Match($clean, 'if\s*\([^{};]*(?:\*\s*pCount|capacity)[^{};]*<[^{};]*\)\s*\{?\s*return\s+-(?!4\b)\d+\s*;')
+    $capacityMatch = [regex]::Match($clean, 'if\s*\((?<condition>[^{};]*(?:\*\s*pCount\s*<|>\s*\*\s*pCount)[^{};]*)\)\s*\{?\s*return\s+-(?!4\b)\d+\s*;')
     $firstDataWrite = if ($dataWrites.Count -gt 0) { $dataWrites[0].Index } else { -1 }
-    $completeCopy = Test-CompleteCallerBufferCopy $clean $OutputPointer
-    $capacitySafe = $firstDataWrite -ge 0 -and $completeCopy -and (Test-CppGuardDominatesWrites $clean $capacityMatch $dataWrites)
+    $copyProof = Get-CompleteCallerBufferCopyProof $clean $OutputPointer
+    $completeCopy = $copyProof.Valid
+    $countSources = Get-CopyCountSources $clean
+    $returnedCountSafe = Test-ReturnedCountMatchesCopy $clean $firstDataWrite $copyProof
+    $capacityCountSafe = $capacityMatch.Success -and (Test-CapacityGuardMatchesCopy $capacityMatch.Groups['condition'].Value $countSources $copyProof)
+    $capacitySafe = $firstDataWrite -ge 0 -and $completeCopy -and $returnedCountSafe -and $capacityCountSafe -and (Test-CppGuardDominatesWrites $clean $capacityMatch $dataWrites)
     if (Test-Pattern $clean '(?:std::min\s*\(\s*\*\s*pCount|\btoCopy\b[\s\S]{0,160}?return\s+0)') { $capacitySafe = $false }
     $details = [System.Collections.Generic.List[string]]::new()
     if (-not $staleDominates) { $details.Add('a correct current-vs-expected generation mismatch returning stale -4 does not precede every pCount/buffer write') }
     if (-not $coherent) { $details.Add('stale check and all caller writes are not one coherent g_stateMutex-locked copy') }
-    if (-not $capacitySafe) { $details.Add('insufficient capacity can reach a partial/unchecked data write or no provably complete required-count copy is present') }
+    if (-not $capacitySafe) { $details.Add('insufficient capacity can reach a partial/unchecked data write, an inconsistent returned count, an unmatched capacity/count guard, or no provably complete required-count copy is present') }
     return [pscustomobject]@{ Exists = $true; StaleDominates = $staleDominates; Coherent = $coherent; CapacitySafe = $capacitySafe; Detail = ($details -join '; ') }
 }
 
@@ -724,6 +915,8 @@ function Get-CppFunctionPointerTypedefNames {
     }
     foreach ($match in [regex]::Matches($TriviaFreeSource, '\btypedef\s+PFN_[A-Za-z0-9_]+\s+(?<name>[A-Za-z_]\w*)\s*;')) { [void]$names.Add($match.Groups['name'].Value) }
     foreach ($match in [regex]::Matches($TriviaFreeSource, '\busing\s+(?<name>[A-Za-z_]\w*)\s*=\s*PFN_[A-Za-z0-9_]+\s*;')) { [void]$names.Add($match.Groups['name'].Value) }
+    foreach ($match in [regex]::Matches($TriviaFreeSource, '\btypedef\s+std::function\s*<[^;{}]+>\s+(?<name>[A-Za-z_]\w*)\s*;')) { [void]$names.Add($match.Groups['name'].Value) }
+    foreach ($match in [regex]::Matches($TriviaFreeSource, '\busing\s+(?<name>[A-Za-z_]\w*)\s*=\s*std::function\s*<[^;{}]+>\s*;')) { [void]$names.Add($match.Groups['name'].Value) }
     return ,$names
 }
 
@@ -753,20 +946,32 @@ function Get-CppLocalFunctionAliases {
     $functionNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     foreach ($function in $Functions) { [void]$functionNames.Add($function.Name) }
     $aliases = @{}
+    $declaredCallableNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     $customAlternation = if ($null -ne $CustomCallableTypes -and $CustomCallableTypes.Count -gt 0) { '|' + ((@($CustomCallableTypes) | ForEach-Object { [regex]::Escape($_) }) -join '|') } else { '' }
-    $callableType = "(?:(?:const|volatile)\s+)*(?:auto|PFN_[A-Za-z0-9_]+$customAlternation)(?:\s+(?:const|volatile))*"
-    $declarations = [System.Collections.Generic.List[object]]::new()
-    foreach ($match in [regex]::Matches($CleanBody, "\b$callableType\s+(?<lhs>[A-Za-z_]\w*)\s*=\s*&?\s*(?<rhs>[A-Za-z_]\w*)\s*;")) { $declarations.Add($match) }
-    foreach ($match in [regex]::Matches($CleanBody, "\b$callableType\s+(?<lhs>[A-Za-z_]\w*)\s*(?:\{\s*&?\s*(?<rhsBrace>[A-Za-z_]\w*)\s*\}|\(\s*&?\s*(?<rhsParen>[A-Za-z_]\w*)\s*\))\s*;")) { $declarations.Add($match) }
+    $callableType = "(?:(?:const|volatile)\s+)*(?:auto|PFN_[A-Za-z0-9_]+$customAlternation|std::function\s*<[^;{}]+>)(?:\s+(?:const|volatile))*"
+    $assignments = [System.Collections.Generic.List[object]]::new()
+    foreach ($match in [regex]::Matches($CleanBody, "\b$callableType\s+(?<lhs>[A-Za-z_]\w*)\s*=\s*&?\s*(?<rhs>[A-Za-z_]\w*)\s*;")) {
+        [void]$declaredCallableNames.Add($match.Groups['lhs'].Value)
+        $assignments.Add([pscustomobject]@{ Lhs = $match.Groups['lhs'].Value; Rhs = $match.Groups['rhs'].Value })
+    }
+    foreach ($match in [regex]::Matches($CleanBody, "\b$callableType\s+(?<lhs>[A-Za-z_]\w*)\s*(?:\{\s*&?\s*(?<rhsBrace>[A-Za-z_]\w*)\s*\}|\(\s*&?\s*(?<rhsParen>[A-Za-z_]\w*)\s*\))\s*;")) {
+        [void]$declaredCallableNames.Add($match.Groups['lhs'].Value)
+        $rhs = if ($match.Groups['rhsBrace'].Success) { $match.Groups['rhsBrace'].Value } else { $match.Groups['rhsParen'].Value }
+        $assignments.Add([pscustomobject]@{ Lhs = $match.Groups['lhs'].Value; Rhs = $rhs })
+    }
+    foreach ($match in [regex]::Matches($CleanBody, "\b$callableType\s+(?<lhs>[A-Za-z_]\w*)\s*;")) { [void]$declaredCallableNames.Add($match.Groups['lhs'].Value) }
+    foreach ($match in [regex]::Matches($CleanBody, '(?<!\.)\b(?<lhs>[A-Za-z_]\w*)\s*=\s*&?\s*(?<rhs>[A-Za-z_]\w*)\s*;')) {
+        if ($declaredCallableNames.Contains($match.Groups['lhs'].Value)) {
+            $assignments.Add([pscustomobject]@{ Lhs = $match.Groups['lhs'].Value; Rhs = $match.Groups['rhs'].Value })
+        }
+    }
     $changed = $true
     while ($changed) {
         $changed = $false
-        foreach ($declaration in $declarations) {
-            $lhs = $declaration.Groups['lhs'].Value
-            $rhs = if ($declaration.Groups['rhs'].Success) { $declaration.Groups['rhs'].Value } elseif ($declaration.Groups['rhsBrace'].Success) { $declaration.Groups['rhsBrace'].Value } else { $declaration.Groups['rhsParen'].Value }
-            $target = if ($functionNames.Contains($rhs)) { $rhs } elseif ($aliases.ContainsKey($rhs)) { $aliases[$rhs] } else { $null }
-            if ($null -ne $target -and (-not $aliases.ContainsKey($lhs) -or $aliases[$lhs] -ne $target)) {
-                $aliases[$lhs] = $target
+        foreach ($assignment in $assignments) {
+            $target = if ($functionNames.Contains($assignment.Rhs)) { $assignment.Rhs } elseif ($aliases.ContainsKey($assignment.Rhs)) { $aliases[$assignment.Rhs] } else { $null }
+            if ($null -ne $target -and (-not $aliases.ContainsKey($assignment.Lhs) -or $aliases[$assignment.Lhs] -ne $target)) {
+                $aliases[$assignment.Lhs] = $target
                 $changed = $true
             }
         }
@@ -775,12 +980,17 @@ function Get-CppLocalFunctionAliases {
 }
 
 function Get-CppDirectLocalCallees {
-    param([object]$Function, [object[]]$Functions, [System.Collections.Generic.HashSet[string]]$CustomCallableTypes)
+    param(
+        [object]$Function,
+        [object[]]$Functions,
+        [System.Collections.Generic.HashSet[string]]$CustomCallableTypes,
+        [hashtable]$PrecomputedAliases = $null
+    )
     $callees = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     foreach ($candidate in $Functions) {
         if (Test-CppCallableInvocation $Function.CleanBody $candidate.Name) { [void]$callees.Add($candidate.Name) }
     }
-    $aliases = Get-CppLocalFunctionAliases $Function.CleanBody $Functions $CustomCallableTypes
+    $aliases = if ($null -ne $PrecomputedAliases) { $PrecomputedAliases } else { Get-CppLocalFunctionAliases $Function.CleanBody $Functions $CustomCallableTypes }
     foreach ($alias in $aliases.Keys) {
         if (Test-CppCallableInvocation $Function.CleanBody $alias) { [void]$callees.Add([string]$aliases[$alias]) }
     }
@@ -860,12 +1070,34 @@ function Test-NewQueueValidityBit {
     param([string]$Source)
     foreach ($function in Get-CppFunctionInfos $Source) {
         $body = $function.CleanBody
-        if (-not (Test-Pattern $body '\b(?:queueFamilyFlags|queueFamilyQueueCount)\b')) { continue }
-        if ((Test-Pattern $body '(?:queueFamilyFlags|queueFamilyQueueCount)[\s\S]{0,1200}?validMask\s*\|=\s*0x40(?:u|U)?\s*;') -or
-            (Test-Pattern $body 'validMask\s*\|=\s*0x40(?:u|U)?\s*;[\s\S]{0,1200}?(?:queueFamilyFlags|queueFamilyQueueCount)') -or
-            (Test-Pattern $body 'validMask\s*&\s*0x40(?:u|U)?[\s\S]{0,1200}?(?:queueFamilyFlags|queueFamilyQueueCount)') -or
-            (Test-Pattern $body '(?:queueFamilyFlags|queueFamilyQueueCount)[\s\S]{0,1200}?validMask\s*&\s*0x40(?:u|U)?')) {
-            return $true
+        $bitAssignments = @([regex]::Matches($body, '(?<receiver>[A-Za-z_]\w*)\s*(?<access>\.|->)\s*validMask\s*\|=\s*0x40(?:u|U)?\s*;'))
+        foreach ($bitAssignment in $bitAssignments) {
+            $receiver = $bitAssignment.Groups['receiver'].Value
+            $fieldPrefix = "\b$([regex]::Escape($receiver))\s*(?:\.|->)\s*"
+            $beforeBit = $body.Substring(0, $bitAssignment.Index)
+            $flagsAssigned = Test-Pattern $beforeBit "${fieldPrefix}queueFamilyFlags\s*=\s*[^;]*\bqueueFlags\b"
+            $countAssigned = Test-Pattern $beforeBit "${fieldPrefix}queueFamilyQueueCount\s*=\s*[^;]*\bqueueCount\b"
+            if ($flagsAssigned -and $countAssigned) { return $true }
+        }
+
+        foreach ($ifMatch in [regex]::Matches($body, '\bif\s*\(')) {
+            $openParen = $body.IndexOf('(', $ifMatch.Index)
+            $closeParen = Get-MatchingParenIndex $body $openParen
+            if ($closeParen -lt 0) { continue }
+            $condition = $body.Substring($openParen + 1, $closeParen - $openParen - 1)
+            if ($condition -match '!\s*\(?\s*[A-Za-z_]\w*\s*(?:\.|->)\s*validMask' -or $condition -match '==\s*0\b') { continue }
+            $bitMatch = [regex]::Match($condition, '(?<receiver>[A-Za-z_]\w*)\s*(?:\.|->)\s*validMask\s*&\s*0x40(?:u|U)?\b')
+            if (-not $bitMatch.Success) { continue }
+            $cursor = $closeParen + 1
+            while ($cursor -lt $body.Length -and [char]::IsWhiteSpace($body[$cursor])) { $cursor++ }
+            if ($cursor -ge $body.Length -or $body[$cursor] -ne '{') { continue }
+            $closeBrace = Get-MatchingBraceIndex $body $cursor
+            if ($closeBrace -lt 0) { continue }
+            $receiver = [regex]::Escape($bitMatch.Groups['receiver'].Value)
+            $scopeBody = $body.Substring($cursor + 1, $closeBrace - $cursor - 1)
+            $flagsUsed = Test-Pattern $scopeBody "\b$receiver\s*(?:\.|->)\s*queueFamilyFlags\b"
+            $countUsed = Test-Pattern $scopeBody "\b$receiver\s*(?:\.|->)\s*queueFamilyQueueCount\b"
+            if ($flagsUsed -and $countUsed) { return $true }
         }
     }
     return $false
@@ -912,6 +1144,9 @@ function Get-CppDeclaredFunctionPointerNames {
     $customAlternation = if ($CustomCallableTypes.Count -gt 0) { '|' + ((@($CustomCallableTypes) | ForEach-Object { [regex]::Escape($_) }) -join '|') } else { '' }
     $callableType = "(?:(?:const|volatile)\s+)*(?:PFN_[A-Za-z0-9_]+$customAlternation)(?:\s+(?:const|volatile))*"
     foreach ($declaration in [regex]::Matches($CleanSource, "\b$callableType\s+(?<name>[A-Za-z_]\w*)\b")) {
+        [void]$names.Add($declaration.Groups['name'].Value)
+    }
+    foreach ($declaration in [regex]::Matches($CleanSource, '\bstd::function\s*<[^;{}]+>\s+(?<name>[A-Za-z_]\w*)\b')) {
         [void]$names.Add($declaration.Groups['name'].Value)
     }
     return ,$names
@@ -1242,10 +1477,91 @@ int32_t copy_modes(uint64_t expectedGeneration, uint32_t *pCount, VkPresentModeK
  *pCount = required; return 0;
 }
 '@
+    $optionalInlineStaleCopy = @'
+int32_t copy_modes(uint64_t expectedGeneration, uint32_t *pCount, VkPresentModeKHR *pModes) {
+ std::lock_guard lock(g_stateMutex); uint64_t generation = g_metadataGeneration;
+ if (expectedGeneration != generation && validationEnabled) { return -4; }
+ uint32_t required = cachedModes.size(); if (*pCount < required) { return -5; }
+ std::copy(cachedModes.begin(), cachedModes.end(), pModes); *pCount = required; return 0;
+}
+'@
+    $completeCopyN = @'
+int32_t copy_modes(uint64_t expectedGeneration, uint32_t *pCount, VkPresentModeKHR *pModes) {
+ std::lock_guard lock(g_stateMutex); uint64_t generation = g_metadataGeneration;
+ if (expectedGeneration != 0 && expectedGeneration != generation) { return -4; }
+ uint32_t required = cachedModes.size(); if (*pCount < required) { return -5; }
+ std::copy_n(cachedModes.begin(), cachedModes.size(), pModes); *pCount = required; return 0;
+}
+'@
+    $mismatchedRangeCopy = @'
+int32_t copy_modes(uint64_t expectedGeneration, uint32_t *pCount, VkPresentModeKHR *pModes) {
+ std::lock_guard lock(g_stateMutex); uint64_t generation = g_metadataGeneration;
+ if (expectedGeneration != generation) { return -4; }
+ uint32_t required = cachedModes.size(); if (*pCount < required) { return -5; }
+ std::copy(oneMode.begin(), oneMode.end(), pModes); *pCount = required; return 0;
+}
+'@
+    $mismatchedCountCopy = @'
+int32_t copy_modes(uint64_t expectedGeneration, uint32_t *pCount, VkPresentModeKHR *pModes) {
+ std::lock_guard lock(g_stateMutex); uint64_t generation = g_metadataGeneration;
+ if (expectedGeneration != generation) { return -4; }
+ uint32_t required = cachedModes.size(); if (*pCount < required) { return -5; }
+ std::copy_n(oneMode.begin(), required, pModes); *pCount = required; return 0;
+}
+'@
+    $fallthroughStaleCopy = @'
+int32_t copy_modes(uint64_t expectedGeneration, uint32_t *pCount, VkPresentModeKHR *pModes) {
+ std::lock_guard lock(g_stateMutex); uint64_t generation = g_metadataGeneration; int32_t status = 0;
+ if (expectedGeneration != generation) { status = -4; }
+ uint32_t required = cachedModes.size(); if (*pCount < required) { return -5; }
+ std::copy(cachedModes.begin(), cachedModes.end(), pModes); *pCount = required; return status;
+}
+'@
+    $reverseCapacityGuardCopy = @'
+int32_t copy_modes(uint64_t expectedGeneration, uint32_t *pCount, VkPresentModeKHR *pModes) {
+ std::lock_guard lock(g_stateMutex); uint64_t generation = g_metadataGeneration;
+ if (expectedGeneration != generation) { return -4; }
+ uint32_t required = cachedModes.size(); if (required > *pCount) { return -5; }
+ std::copy(cachedModes.begin(), cachedModes.end(), pModes); *pCount = required; return 0;
+}
+'@
+    $wrongCapacityCountCopy = @'
+int32_t copy_modes(uint64_t expectedGeneration, uint32_t *pCount, VkPresentModeKHR *pModes) {
+ std::lock_guard lock(g_stateMutex); uint64_t generation = g_metadataGeneration;
+ if (expectedGeneration != generation) { return -4; }
+ uint32_t required = cachedModes.size(); uint32_t wrongRequired = oneMode.size(); if (*pCount < wrongRequired) { return -5; }
+ std::copy(cachedModes.begin(), cachedModes.end(), pModes); *pCount = required; return 0;
+}
+'@
+    $wrongReturnedCountCopy = @'
+int32_t copy_modes(uint64_t expectedGeneration, uint32_t *pCount, VkPresentModeKHR *pModes) {
+ std::lock_guard lock(g_stateMutex); uint64_t generation = g_metadataGeneration;
+ if (expectedGeneration != generation) { return -4; }
+ uint32_t required = cachedModes.size(); if (*pCount < required) { return -5; }
+ std::copy(cachedModes.begin(), cachedModes.end(), pModes); *pCount = required - 1; return 0;
+}
+'@
+    $missingReturnedCountCopy = @'
+int32_t copy_modes(uint64_t expectedGeneration, uint32_t *pCount, VkPresentModeKHR *pModes) {
+ std::lock_guard lock(g_stateMutex); uint64_t generation = g_metadataGeneration;
+ if (expectedGeneration != generation) { return -4; }
+ uint32_t required = cachedModes.size(); if (*pCount < required) { return -5; }
+ std::copy(cachedModes.begin(), cachedModes.end(), pModes); return 0;
+}
+'@
     Assert-SelfCheck (-not (Get-CopyOutAnalysis $partialDirectCopy 'copy_modes' 'pModes').CapacitySafe) 'copy-out audit rejects a single indexed write after a capacity guard'
     Assert-SelfCheck (-not (Get-CopyOutAnalysis $invertedStaleCopy 'copy_modes' 'pModes').StaleDominates) 'copy-out audit rejects inverted expected-generation equality as stale validation'
     Assert-SelfCheck (Get-CopyOutAnalysis $completeLoopCopy 'copy_modes' 'pModes').CapacitySafe 'copy-out audit accepts a required-count complete indexed loop'
     Assert-SelfCheck (-not (Get-CopyOutAnalysis $earlyBreakLoopCopy 'copy_modes' 'pModes').CapacitySafe) 'copy-out audit rejects a required-count loop with an early exit'
+    Assert-SelfCheck (-not (Get-CopyOutAnalysis $optionalInlineStaleCopy 'copy_modes' 'pModes').StaleDominates) 'copy-out audit rejects a generation mismatch weakened by an optional predicate'
+    Assert-SelfCheck (Get-CopyOutAnalysis $completeCopyN 'copy_modes' 'pModes').CapacitySafe 'copy-out audit accepts copy_n when source size and required count agree'
+    Assert-SelfCheck (-not (Get-CopyOutAnalysis $mismatchedRangeCopy 'copy_modes' 'pModes').CapacitySafe) 'copy-out audit rejects a full range from a source smaller than required'
+    Assert-SelfCheck (-not (Get-CopyOutAnalysis $mismatchedCountCopy 'copy_modes' 'pModes').CapacitySafe) 'copy-out audit rejects copy_n when source and required count disagree'
+    Assert-SelfCheck (-not (Get-CopyOutAnalysis $fallthroughStaleCopy 'copy_modes' 'pModes').StaleDominates) 'copy-out audit rejects stale status assignment that falls through to data copy'
+    Assert-SelfCheck (-not (Get-CopyOutAnalysis $wrongCapacityCountCopy 'copy_modes' 'pModes').CapacitySafe) 'copy-out audit rejects a capacity guard for a count different from the copied source'
+    Assert-SelfCheck (Get-CopyOutAnalysis $reverseCapacityGuardCopy 'copy_modes' 'pModes').CapacitySafe 'copy-out audit accepts the equivalent reversed capacity guard'
+    Assert-SelfCheck (-not (Get-CopyOutAnalysis $wrongReturnedCountCopy 'copy_modes' 'pModes').CapacitySafe) 'copy-out audit rejects a returned count different from the copied element count'
+    Assert-SelfCheck (-not (Get-CopyOutAnalysis $missingReturnedCountCopy 'copy_modes' 'pModes').CapacitySafe) 'copy-out audit rejects a copy that never reports the copied count'
 
     $lockTransitiveHelper = @'
 void query_modes_helper() { realGetModes(physicalDevice, surface, &count, modes); }
@@ -1266,11 +1582,27 @@ PFN_vkGetPhysicalDeviceSurfacePresentModesKHR cachedModes;
 void bad_std_invoke() { std::lock_guard lock(g_stateMutex); std::invoke(cachedModes, physicalDevice, surface, &count, modes); }
 '@
     $lockMapMethodSafe = 'void map_lookup_is_not_a_pfn() { std::lock_guard lock(g_stateMutex); auto it = stateBySwapchain.find(swapchain); }'
+    $lockPostDeclarationHelper = @'
+void query_modes_helper() { realGetModes(physicalDevice, surface, &count, modes); }
+void bad_locked_post_alias() { std::lock_guard lock(g_stateMutex); auto invoke; invoke = query_modes_helper; invoke(); }
+'@
+    $lockStdFunctionTypeAlias = @'
+using HelperCallable = std::function<void()>;
+void query_modes_helper() { realGetModes(physicalDevice, surface, &count, modes); }
+void bad_std_function_type_alias() { HelperCallable invoke; invoke = query_modes_helper; std::lock_guard lock(g_stateMutex); invoke(); }
+'@
+    $lockStdFunctionVulkan = @'
+PFN_vkGetPhysicalDeviceSurfacePresentModesKHR cachedModes;
+void bad_std_function_vulkan() { std::function<VkResult(VkPhysicalDevice, VkSurfaceKHR, uint32_t *, VkPresentModeKHR *)> invoke; invoke = cachedModes; std::lock_guard lock(g_stateMutex); invoke(physicalDevice, surface, &count, modes); }
+'@
     Assert-SelfCheck (@(Find-RealVulkanCallsUnderStateMutex $lockTransitiveHelper).Count -gt 0) 'lock audit follows a locked caller into a real-Vulkan helper'
     Assert-SelfCheck (@(Find-RealVulkanCallsUnderStateMutex $lockCustomTypedef).Count -gt 0) 'lock audit rejects a custom-typedef cached Vulkan function pointer'
     Assert-SelfCheck (@(Find-RealVulkanCallsUnderStateMutex $lockAliasedVulkanTypedef).Count -gt 0) 'lock audit rejects a custom typedef aliased from a Vulkan PFN type'
     Assert-SelfCheck (@(Find-RealVulkanCallsUnderStateMutex $lockStdInvoke).Count -gt 0) 'lock audit rejects std::invoke of a cached Vulkan PFN'
     Assert-SelfCheck (@(Find-RealVulkanCallsUnderStateMutex $lockMapMethodSafe).Count -eq 0) 'lock audit preserves ordinary map method calls under the mutex'
+    Assert-SelfCheck (@(Find-RealVulkanCallsUnderStateMutex $lockPostDeclarationHelper).Count -gt 0) 'lock audit follows a helper alias assigned after declaration'
+    Assert-SelfCheck (@(Find-RealVulkanCallsUnderStateMutex $lockStdFunctionVulkan).Count -gt 0) 'lock audit rejects a std::function wrapper for a real Vulkan PFN'
+    Assert-SelfCheck (@(Find-RealVulkanCallsUnderStateMutex $lockStdFunctionTypeAlias).Count -gt 0) 'lock audit rejects a using std::function alias for a real-Vulkan helper'
 
     $passiveExactMetadataGettersGood = @'
 typedef int32_t (*PFN_lsfg_interposer_bridge_get_snapshot_v2)(LsfgBridgeSnapshotV2 *);
@@ -1291,10 +1623,26 @@ typedef int32_t (*MetadataCallable)(void *);
 MetadataCallable metadataCallable;
 void v2a1_metadata_worker() { metadataCallable(&snapshot); }
 '@
+    $passiveUnknownStdFunctionTypeAliasBad = @'
+using UnknownCallable = std::function<void()>;
+void v2a1_metadata_worker() { UnknownCallable invoke; invoke = external_callable; invoke(); }
+'@
+    $passiveUnknownStdFunctionBad = @'
+void v2a1_metadata_worker() { std::function<void()> invoke; invoke = external_callable; invoke(); }
+'@
     Assert-SelfCheck (@(Find-PassivePathViolations $passiveExactMetadataGettersGood).Count -eq 0) 'passive audit accepts only explicitly typed exact metadata getter PFNs'
     Assert-SelfCheck (@(Find-PassivePathViolations $passiveMadeUpBridgePfnBad).Count -gt 0) 'passive audit rejects a made-up active bridge PFN'
     Assert-SelfCheck (@(Find-PassivePathViolations $passiveUnknownCustomCallableBad).Count -gt 0) 'passive audit conservatively rejects an unknown custom callable type'
+    Assert-SelfCheck (@(Find-PassivePathViolations $passiveUnknownStdFunctionBad).Count -gt 0) 'passive audit conservatively rejects an unknown std::function worker call'
+    Assert-SelfCheck (@(Find-PassivePathViolations $passiveUnknownStdFunctionTypeAliasBad).Count -gt 0) 'passive audit conservatively rejects an unknown using std::function type alias'
 
+    $usingStdFunctionEveryFrameWorkerBad = @'
+std::atomic<bool> g_v2a1WorkerStarted;
+void v2a1_metadata_worker() {}
+void discover_bridge_exports() { if (!g_v2a1WorkerStarted.exchange(true)) { std::thread worker(v2a1_metadata_worker); } }
+using MetadataStarter = std::function<void()>;
+void render_frame() { MetadataStarter invoke; invoke = discover_bridge_exports; invoke(); }
+'@
     $customAliasEveryFrameWorkerBad = @'
 std::atomic<bool> g_v2a1WorkerStarted;
 void v2a1_metadata_worker() {}
@@ -1302,7 +1650,23 @@ void initialize_metadata() { if (!g_v2a1WorkerStarted.exchange(true)) { std::thr
 typedef void (*MetadataStarter)();
 void render_frame() { MetadataStarter starter = initialize_metadata; starter(); }
 '@
+    $postDeclarationEveryFrameWorkerBad = @'
+std::atomic<bool> g_v2a1WorkerStarted;
+void v2a1_metadata_worker() {}
+void discover_bridge_exports() { if (!g_v2a1WorkerStarted.exchange(true)) { std::thread worker(v2a1_metadata_worker); } }
+void render_frame() { auto invoke; invoke = discover_bridge_exports; invoke(); }
+'@
+    $customPostDeclarationEveryFrameWorkerBad = @'
+std::atomic<bool> g_v2a1WorkerStarted;
+void v2a1_metadata_worker() {}
+void discover_bridge_exports() { if (!g_v2a1WorkerStarted.exchange(true)) { std::thread worker(v2a1_metadata_worker); } }
+typedef void (*MetadataStarter)();
+void render_frame() { MetadataStarter invoke; invoke = discover_bridge_exports; invoke(); }
+'@
     Assert-SelfCheck (-not (Get-ConsumerWorkerArrangement $customAliasEveryFrameWorkerBad).InitializationTied) 'worker audit rejects render reachability through a custom function-pointer typedef alias'
+    Assert-SelfCheck (-not (Get-ConsumerWorkerArrangement $postDeclarationEveryFrameWorkerBad).InitializationTied) 'worker audit rejects render reachability through an auto alias assigned after declaration'
+    Assert-SelfCheck (-not (Get-ConsumerWorkerArrangement $customPostDeclarationEveryFrameWorkerBad).InitializationTied) 'worker audit rejects render reachability through a custom typedef alias assigned after declaration'
+    Assert-SelfCheck (-not (Get-ConsumerWorkerArrangement $usingStdFunctionEveryFrameWorkerBad).InitializationTied) 'worker audit rejects render reachability through a using std::function alias'
 
     $disabledCompleteAbi = @'
 #if 0
@@ -1323,20 +1687,66 @@ int32_t lsfg_interposer_bridge_get_snapshot_v2(LsfgBridgeSnapshotV2 *outSnapshot
     Assert-SelfCheck (-not (Test-V2AbiLayout $disabledCompleteAbi).Prefix) 'preprocessor audit masks nested disabled ABI declarations'
     Assert-SelfCheck (@(Get-CppFunctionInfos $disabledCompleteAbi).Count -eq 0) 'preprocessor audit masks functions in nested disabled blocks'
     Assert-SelfCheck (-not (Get-ExistingValidityBitAnalysis $disabledCompleteAbi).Core) 'preprocessor audit masks validity mappings in nested disabled blocks'
+    $disabledLeftCompound = $disabledCompleteAbi.Replace('#if 0', '#if 0 && defined(X)')
+    $disabledRightCompound = $disabledCompleteAbi.Replace('#if 0', '#if defined(X) && 0')
+    $disabledNegatedCompound = $disabledCompleteAbi.Replace('#if 0', '#if !defined(X) && 0')
+    Assert-SelfCheck (@(Get-CppFunctionInfos $disabledLeftCompound).Count -eq 0) 'preprocessor audit masks nested code under #if 0 && defined(X)'
+    Assert-SelfCheck (@(Get-CppFunctionInfos $disabledRightCompound).Count -eq 0) 'preprocessor audit masks nested code under #if defined(X) && 0'
+    Assert-SelfCheck (@(Get-CppFunctionInfos $disabledNegatedCompound).Count -eq 0) 'preprocessor audit masks nested code under #if !defined(X) && 0'
 
     $queueBitEnumOnly = 'enum BridgeValidity { LSFG_BRIDGE_VALID_QUEUE = 0x40 };'
     $queueBitLive = 'void consume_snapshot() { if (snapshot.validMask & 0x40) { log(snapshot.queueFamilyFlags, snapshot.queueFamilyQueueCount); } }'
+    $queueBitProducerLive = 'void make_snapshot() { hostSnapshot.queueFamilyFlags = props.queueFlags; hostSnapshot.queueFamilyQueueCount = props.queueCount; hostSnapshot.validMask |= 0x40; }'
+    $queueBitInverted = 'void consume_snapshot() { if (!(snapshot.validMask & 0x40)) { log(snapshot.queueFamilyFlags, snapshot.queueFamilyQueueCount); } }'
+    $queueBitProximityOnly = 'void consume_snapshot() { if (snapshot.validMask & 0x40) { log(other.queueFamilyFlags, other.queueFamilyQueueCount); } }'
+    $queueBitTextOnly = 'void make_snapshot() { snapshot.queueFamilyFlags = props.queueFlags; snapshot.queueFamilyQueueCount = props.queueCount; }'
     Assert-SelfCheck (-not (Test-NewQueueValidityBit $queueBitEnumOnly)) 'queue validity audit rejects an unused enum-only 0x40 declaration'
     Assert-SelfCheck (Test-NewQueueValidityBit $queueBitLive) 'queue validity audit accepts a live 0x40 queue-field consumer check'
+    Assert-SelfCheck (Test-NewQueueValidityBit $queueBitProducerLive) 'queue validity audit accepts producer assignment of both queue fields before setting 0x40'
+    Assert-SelfCheck (-not (Test-NewQueueValidityBit $queueBitInverted)) 'queue validity audit rejects an inverted 0x40 consumer check'
+    Assert-SelfCheck (-not (Test-NewQueueValidityBit $queueBitProximityOnly)) 'queue validity audit rejects fields from the wrong queue-family object'
+    Assert-SelfCheck (-not (Test-NewQueueValidityBit $queueBitTextOnly)) 'queue validity audit rejects queue fields that are never emitted or validated by 0x40'
 
     $presentModesTypedef = 'typedef int32_t (*PFN_lsfg_interposer_bridge_get_present_modes_v2)(uint64_t expectedGeneration, VkSwapchainKHR swapchain, uint32_t *pCount, VkPresentModeKHR *pModes);'
+    $presentModesProducer = 'int32_t lsfg_interposer_bridge_get_present_modes_v2(uint64_t expectedGeneration, VkSwapchainKHR swapchain, uint32_t *pCount, VkPresentModeKHR *pModes) { return 0; }'
+    $wrongPresentModesTypedefs = @(
+        @{ Name = 'wrong argument order'; Text = 'typedef int32_t (*PFN_lsfg_interposer_bridge_get_present_modes_v2)(VkSwapchainKHR swapchain, uint64_t expectedGeneration, uint32_t *pCount, VkPresentModeKHR *pModes);' },
+        @{ Name = 'wrong swapchain type'; Text = 'typedef int32_t (*PFN_lsfg_interposer_bridge_get_present_modes_v2)(uint64_t expectedGeneration, VkSurfaceKHR swapchain, uint32_t *pCount, VkPresentModeKHR *pModes);' },
+        @{ Name = 'missing expectedGeneration'; Text = 'typedef int32_t (*PFN_lsfg_interposer_bridge_get_present_modes_v2)(VkSwapchainKHR swapchain, uint32_t *pCount, VkPresentModeKHR *pModes);' },
+        @{ Name = 'wrong present-mode pointer'; Text = 'typedef int32_t (*PFN_lsfg_interposer_bridge_get_present_modes_v2)(uint64_t expectedGeneration, VkSwapchainKHR swapchain, uint32_t *pCount, VkImage *pModes);' },
+        @{ Name = 'wrong return type'; Text = 'typedef void (*PFN_lsfg_interposer_bridge_get_present_modes_v2)(uint64_t expectedGeneration, VkSwapchainKHR swapchain, uint32_t *pCount, VkPresentModeKHR *pModes);' }
+    )
+    $wrongConsumerTypedefWithProducer = 'typedef void (*PFN_lsfg_interposer_bridge_get_present_modes_v2)(uint64_t expectedGeneration, VkSwapchainKHR swapchain, uint32_t *pCount, VkPresentModeKHR *pModes); int32_t lsfg_interposer_bridge_get_present_modes_v2(uint64_t expectedGeneration, VkSwapchainKHR swapchain, uint32_t *pCount, VkPresentModeKHR *pModes) { return 0; }'
     Assert-SelfCheck (Test-ExactPresentModesSignature $presentModesTypedef) 'present-mode signature audit accepts the canonical consumer typedef declaration'
+    Assert-SelfCheck (Test-ExactPresentModesProducerSignature $presentModesProducer) 'present-mode signature audit accepts the exact producer definition independently'
+    $presentModesProducerDeclarationOnly = 'int32_t lsfg_interposer_bridge_get_present_modes_v2(uint64_t expectedGeneration, VkSwapchainKHR swapchain, uint32_t *pCount, VkPresentModeKHR *pModes);'
+    Assert-SelfCheck (-not (Test-ExactPresentModesProducerSignature $presentModesProducerDeclarationOnly)) 'present-mode signature audit rejects a declaration without a producer definition'
+    Assert-SelfCheck (-not (Test-ExactPresentModesSignature $wrongConsumerTypedefWithProducer)) 'consumer present-mode ABI audit rejects a void typedef even when a producer-style function is present'
+    foreach ($fixture in $wrongPresentModesTypedefs) {
+        Assert-SelfCheck (-not (Test-ExactPresentModesSignature $fixture.Text)) "consumer present-mode ABI audit rejects $($fixture.Name)"
+    }
 
     $allV2A1Labels = @('generation=', 'currentExtent=', 'minImageExtent=', 'maxImageExtent=', 'maxImageArrayLayers=', 'supportedTransforms=', 'currentTransform=', 'supportedCompositeAlpha=', 'supportedUsageFlags=', 'queueFamilyFlags=', 'queueFamilyQueueCount=', 'supportedPresentModeCount=', 'supportedPresentModes=', 'swapchainImageCount=', 'swapchainImageCopyOutStatus=')
-    $legacyGenerationOnly = 'void legacy_log() { log("[LSFG-V2A] generation="); } void emit_v2a1() { log("[LSFG-V2A1] currentExtent= minImageExtent= maxImageExtent= maxImageArrayLayers= supportedTransforms= currentTransform= supportedCompositeAlpha= supportedUsageFlags= queueFamilyFlags= queueFamilyQueueCount= supportedPresentModeCount= supportedPresentModes= swapchainImageCount= swapchainImageCopyOutStatus="); }'
+    $legacyGenerationOnly = 'void legacy_log() { LOGI("[LSFG-V2A] generation="); } void emit_v2a1() { LOGI("[LSFG-V2A1] currentExtent= minImageExtent= maxImageExtent= maxImageArrayLayers= supportedTransforms= currentTransform= supportedCompositeAlpha= supportedUsageFlags= queueFamilyFlags= queueFamilyQueueCount= supportedPresentModeCount= supportedPresentModes= swapchainImageCount= swapchainImageCopyOutStatus="); }'
     $completeV2A1Log = $legacyGenerationOnly.Replace('[LSFG-V2A1] currentExtent=', '[LSFG-V2A1] generation= currentExtent=')
+    $deadDiagnostic = @'
+#if 0
+void emit_v2a1_dead() { LOGI("[LSFG-V2A1] generation= currentExtent= minImageExtent= maxImageExtent= maxImageArrayLayers= supportedTransforms= currentTransform= supportedCompositeAlpha= supportedUsageFlags= queueFamilyFlags= queueFamilyQueueCount= supportedPresentModeCount= supportedPresentModes= swapchainImageCount= swapchainImageCopyOutStatus="); }
+#endif
+'@
+    $unrelatedDiagnostic = @'
+void unrelated_helper() { LOGI("[LSFG-V2A1] generation= currentExtent= minImageExtent= maxImageExtent= maxImageArrayLayers= supportedTransforms= currentTransform= supportedCompositeAlpha= supportedUsageFlags= queueFamilyFlags= queueFamilyQueueCount= supportedPresentModeCount= supportedPresentModes= swapchainImageCount= swapchainImageCopyOutStatus="); }
+'@
+    $presentCallbackDiagnostic = @'
+void lsfg_present_observer_callback_v1() { LOGI("[LSFG-V2A1] generation= currentExtent= minImageExtent= maxImageExtent= maxImageArrayLayers= supportedTransforms= currentTransform= supportedCompositeAlpha= supportedUsageFlags= queueFamilyFlags= queueFamilyQueueCount= supportedPresentModeCount= supportedPresentModes= swapchainImageCount= swapchainImageCopyOutStatus="); }
+'@
+    $unusedCompleteV2A1String = 'void emit_v2a1() { const char *unused = "[LSFG-V2A1] generation= currentExtent= minImageExtent= maxImageExtent= maxImageArrayLayers= supportedTransforms= currentTransform= supportedCompositeAlpha= supportedUsageFlags= queueFamilyFlags= queueFamilyQueueCount= supportedPresentModeCount= supportedPresentModes= swapchainImageCount= swapchainImageCopyOutStatus="; LOGI("metadata unavailable"); }'
     Assert-SelfCheck (-not (Test-V2A1DiagnosticBlock $legacyGenerationOnly $allV2A1Labels).Complete) 'V2A.1 log audit rejects generation supplied only by a legacy V2A diagnostic'
-    Assert-SelfCheck (Test-V2A1DiagnosticBlock $completeV2A1Log $allV2A1Labels).Complete 'V2A.1 log audit accepts all labels in one literal-tagged diagnostic function'
+    Assert-SelfCheck (-not (Test-V2A1DiagnosticBlock $unusedCompleteV2A1String $allV2A1Labels).Complete) 'V2A.1 log audit rejects complete labels in an unused string variable'
+    Assert-SelfCheck (-not (Test-V2A1DiagnosticBlock $deadDiagnostic $allV2A1Labels).Complete) 'V2A.1 log audit rejects labels in a disabled diagnostic function'
+    Assert-SelfCheck (-not (Test-V2A1DiagnosticBlock $unrelatedDiagnostic $allV2A1Labels).Complete) 'V2A.1 log audit rejects a complete diagnostic in an unrelated function'
+    Assert-SelfCheck (-not (Test-V2A1DiagnosticBlock $presentCallbackDiagnostic $allV2A1Labels).Complete) 'V2A.1 log audit rejects a complete diagnostic inside the present callback'
+    Assert-SelfCheck (Test-V2A1DiagnosticBlock $completeV2A1Log $allV2A1Labels).Complete 'V2A.1 log audit accepts all labels in one emitted literal-tagged diagnostic block'
 }
 
 function Invoke-ProducerChecks {
@@ -1345,7 +1755,7 @@ function Invoke-ProducerChecks {
     Assert-ExistingValidityBits $source $scope
     Add-Result (Test-NewQueueValidityBit $source) $scope 'new queue-family capability validity bit is semantically tied to queue fields at code value 0x40' 'no uncommented queue-field/0x40 mapping was found'
     Assert-StructSizeBoundedSnapshotCopy $source $scope
-    Assert-ExactPresentModesSignature $source $scope
+    Assert-ExactPresentModesProducerSignature $source $scope
     $metadataBody = Get-CppStructBody $source 'SwapchainMetadata'
     Add-Result ($null -ne $metadataBody -and (Test-Pattern $metadataBody 'std::vector\s*<\s*VkPresentModeKHR\s*>\s+supportedPresentModes\b')) $scope 'producer owns the complete present-mode list in std::vector<VkPresentModeKHR>' 'SwapchainMetadata lacks value-owned unbounded present-mode storage'
     Assert-Pattern $source '\bPFN_vkGetPhysicalDeviceQueueFamilyProperties\b' $scope 'producer resolves queue-family properties from the real Vulkan driver'
