@@ -645,18 +645,58 @@ function Test-NewQueueValidityBit {
         (Test-Pattern $clean 'LSFG_BRIDGE_VALID_[A-Za-z0-9_]*QUEUE[A-Za-z0-9_]*\s*=\s*0x40(?:u|U)?')
 }
 
+function Get-SafeBridgeMetadataIndirectCallNames {
+    param([string]$CleanSource, [string]$CleanBody)
+    $safeNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    $typedAtomics = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    $bridgePfnType = 'PFN_lsfg_interposer_bridge_[A-Za-z0-9_]+'
+    foreach ($declaration in [regex]::Matches($CleanSource, "\bstd::atomic\s*<\s*$bridgePfnType\s*>\s+(?<name>[A-Za-z_]\w*)")) {
+        [void]$typedAtomics.Add($declaration.Groups['name'].Value)
+    }
+    foreach ($declaration in [regex]::Matches($CleanBody, "\b$bridgePfnType(?:\s+(?:const|volatile))*\s+(?<name>[A-Za-z_]\w*)\b")) {
+        [void]$safeNames.Add($declaration.Groups['name'].Value)
+    }
+
+    $callableType = '(?:(?:const|volatile)\s+)*(?:auto|PFN_[A-Za-z0-9_]+)(?:\s+(?:const|volatile))*'
+    $loadAliases = [System.Collections.Generic.List[object]]::new()
+    foreach ($declaration in [regex]::Matches($CleanBody, "\b$callableType\s+(?<lhs>[A-Za-z_]\w*)\s*=\s*(?<rhs>[A-Za-z_]\w*)\s*\.\s*load\s*\([^;]*\)\s*;")) { $loadAliases.Add($declaration) }
+    foreach ($declaration in [regex]::Matches($CleanBody, "\b$callableType\s+(?<lhs>[A-Za-z_]\w*)\s*(?:\{\s*(?<rhsBrace>[A-Za-z_]\w*)\s*\.\s*load\s*\([^;{}]*\)\s*\}|\(\s*(?<rhsParen>[A-Za-z_]\w*)\s*\.\s*load\s*\([^;()]*\)\s*\))\s*;")) { $loadAliases.Add($declaration) }
+    foreach ($declaration in $loadAliases) {
+        $rhs = if ($declaration.Groups['rhs'].Success) { $declaration.Groups['rhs'].Value } elseif ($declaration.Groups['rhsBrace'].Success) { $declaration.Groups['rhsBrace'].Value } else { $declaration.Groups['rhsParen'].Value }
+        if ($typedAtomics.Contains($rhs)) { [void]$safeNames.Add($declaration.Groups['lhs'].Value) }
+    }
+
+    $aliases = [System.Collections.Generic.List[object]]::new()
+    foreach ($declaration in [regex]::Matches($CleanBody, "\b$callableType\s+(?<lhs>[A-Za-z_]\w*)\s*=\s*&?\s*(?<rhs>[A-Za-z_]\w*)\s*;")) { $aliases.Add($declaration) }
+    foreach ($declaration in [regex]::Matches($CleanBody, "\b$callableType\s+(?<lhs>[A-Za-z_]\w*)\s*(?:\{\s*&?\s*(?<rhsBrace>[A-Za-z_]\w*)\s*\}|\(\s*&?\s*(?<rhsParen>[A-Za-z_]\w*)\s*\))\s*;")) { $aliases.Add($declaration) }
+    $changed = $true
+    while ($changed) {
+        $changed = $false
+        foreach ($declaration in $aliases) {
+            $rhs = if ($declaration.Groups['rhs'].Success) { $declaration.Groups['rhs'].Value } elseif ($declaration.Groups['rhsBrace'].Success) { $declaration.Groups['rhsBrace'].Value } else { $declaration.Groups['rhsParen'].Value }
+            if ($safeNames.Contains($rhs) -and $safeNames.Add($declaration.Groups['lhs'].Value)) { $changed = $true }
+        }
+    }
+    return ,$safeNames
+}
+
 function Get-UnresolvedIndirectCallNames {
-    param([string]$CleanBody, [object[]]$Functions, [System.Collections.Generic.HashSet[string]]$KnownVulkanPfns)
+    param(
+        [string]$CleanBody,
+        [object[]]$Functions,
+        [System.Collections.Generic.HashSet[string]]$KnownVulkanPfns,
+        [System.Collections.Generic.HashSet[string]]$SafeBridgeMetadataPfns
+    )
     $resolved = Get-CppLocalFunctionAliases $CleanBody $Functions
     $unresolved = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     foreach ($call in [regex]::Matches($CleanBody, '\(\s*\*\s*(?<name>[A-Za-z_]\w*)\s*\)\s*\(')) {
         $name = $call.Groups['name'].Value
-        if (-not $resolved.ContainsKey($name) -and -not $KnownVulkanPfns.Contains($name)) { [void]$unresolved.Add($name) }
+        if (-not $resolved.ContainsKey($name) -and -not $KnownVulkanPfns.Contains($name) -and -not $SafeBridgeMetadataPfns.Contains($name)) { [void]$unresolved.Add($name) }
     }
     $callableType = '(?:(?:const|volatile)\s+)*(?:auto|PFN_[A-Za-z0-9_]+)(?:\s+(?:const|volatile))*'
     foreach ($declaration in [regex]::Matches($CleanBody, "\b$callableType\s+(?<name>[A-Za-z_]\w*)\s*(?:=|\{|\()")) {
         $name = $declaration.Groups['name'].Value
-        if ((Test-CppCallableInvocation $CleanBody $name) -and -not $resolved.ContainsKey($name) -and -not $KnownVulkanPfns.Contains($name)) {
+        if ((Test-CppCallableInvocation $CleanBody $name) -and -not $resolved.ContainsKey($name) -and -not $KnownVulkanPfns.Contains($name) -and -not $SafeBridgeMetadataPfns.Contains($name)) {
             [void]$unresolved.Add($name)
         }
     }
@@ -666,6 +706,7 @@ function Get-UnresolvedIndirectCallNames {
 function Find-PassivePathViolations {
     param([string]$Source)
     $violations = [System.Collections.Generic.List[string]]::new()
+    $cleanSource = Remove-CppTrivia $Source
     $cachedVulkanPfns = Get-CachedRealVulkanPfnNames $Source
     $functions = @(Get-CppFunctionInfos $Source)
     $forbiddenCall = '\b(?:vk|lsfg_vk|g_real)(?:AcquireNextImage(?:2)?KHR|QueuePresentKHR|QueueSubmit(?:2)?|WaitForFences|ResetFences|CreateFence|CreateSemaphore|SignalSemaphore|WaitSemaphores|CmdPipelineBarrier(?:2)?|CmdCopyImage(?:2)?|CmdBlitImage(?:2)?|CmdResolveImage(?:2)?|CmdDispatch(?:Base)?)\s*\('
@@ -682,7 +723,8 @@ function Find-PassivePathViolations {
                 $violations.Add("$($function.Name): cached real Vulkan PFN $pfnName()")
             }
         }
-        foreach ($name in Get-UnresolvedIndirectCallNames $clean $functions $cachedVulkanPfns) {
+        $safeBridgeMetadataPfns = Get-SafeBridgeMetadataIndirectCallNames $cleanSource $clean
+        foreach ($name in Get-UnresolvedIndirectCallNames $clean $functions $cachedVulkanPfns $safeBridgeMetadataPfns) {
             $violations.Add("$($function.Name): unresolved indirect call $name()")
         }
     }
@@ -884,6 +926,15 @@ int32_t lsfg_interposer_bridge_get_snapshot_v2(LsfgBridgeSnapshotV2 *outSnapshot
     $passiveIndirectHelperBad = 'void active_helper() { vkQueueSubmit(queue, 1, submits, fence); } void v2a1_metadata_worker() { auto invoke = active_helper; invoke(); }'
     $passiveConstIndirectHelperBad = 'void active_helper() { vkQueueSubmit(queue, 1, submits, fence); } void v2a1_metadata_worker() { auto const invoke(active_helper); invoke(); }'
     $passiveUnresolvedIndirectBad = 'void v2a1_metadata_worker() { auto invoke = external_callable; invoke(); }'
+    $passiveBridgeMetadataGetterGood = @'
+typedef int32_t (*PFN_lsfg_interposer_bridge_get_snapshot_v2)(LsfgBridgeSnapshotV2 *outSnapshot);
+std::atomic<PFN_lsfg_interposer_bridge_get_snapshot_v2> g_getSnapshotV2Fn{nullptr};
+void v2a1_metadata_worker() {
+    auto fn = g_getSnapshotV2Fn.load(std::memory_order_relaxed);
+    LsfgBridgeSnapshotV2 snapshot{};
+    fn(&snapshot);
+}
+'@
     $passiveOutside = 'void v2a1_metadata_worker() { query_metadata(); } void lsfg_vkQueuePresentKHR() { vkQueuePresentKHR(queue, info); }'
     $initWorkerGood = 'std::atomic<bool> g_v2a1WorkerStarted; void v2a1_metadata_worker() {} void discover_bridge_exports() { if (!g_v2a1WorkerStarted.exchange(true)) { std::thread worker(v2a1_metadata_worker); } }'
     $transitiveInitWorkerGood = 'std::atomic<bool> g_metadataWorkerStarted; void v2a1_metadata_worker() {} void start_probe() { if (!g_metadataWorkerStarted.exchange(true)) { std::thread worker(v2a1_metadata_worker); } } void discover_bridge_exports() { start_probe(); }'
@@ -899,6 +950,7 @@ int32_t lsfg_interposer_bridge_get_snapshot_v2(LsfgBridgeSnapshotV2 *outSnapshot
     Assert-SelfCheck (@(Find-PassivePathViolations $passiveIndirectHelperBad).Count -gt 0) 'passive audit rejects active helper reached through function-pointer alias'
     Assert-SelfCheck (@(Find-PassivePathViolations $passiveConstIndirectHelperBad).Count -gt 0) 'passive audit rejects active helper reached through const function-pointer alias'
     Assert-SelfCheck (@(Find-PassivePathViolations $passiveUnresolvedIndirectBad).Count -gt 0) 'passive audit conservatively rejects unresolved indirect worker call'
+    Assert-SelfCheck (@(Find-PassivePathViolations $passiveBridgeMetadataGetterGood).Count -eq 0) 'passive audit accepts bridge metadata getter loaded from typed atomic'
     Assert-SelfCheck (@(Find-PassivePathViolations $passiveOutside).Count -eq 0) 'passive audit ignores existing wrapper outside V2A.1 path'
     Assert-SelfCheck (Get-ConsumerWorkerArrangement $initWorkerGood).InitializationTied 'worker audit accepts one-shot launch in export-discovery path'
     Assert-SelfCheck (Get-ConsumerWorkerArrangement $transitiveInitWorkerGood).InitializationTied 'worker audit ties delegated launch to parsed export-discovery root'
