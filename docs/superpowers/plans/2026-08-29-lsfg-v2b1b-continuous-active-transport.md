@@ -4,11 +4,13 @@
 
 **Goal:** Implement and verify milestone **LSFG V2B.1B (Continuous 1:1 Duplicate-Frame Active Transport)** by enabling continuous active presentation doubling ($M \rightarrow N$) across all eligible application frames in the Amethyst Vulkan interposer, while strictly preserving V2B.0 FIFO and V2B.1A single-shot baseline behaviors as zero-rebuild rollbacks.
 
-**Architecture:** Amethyst (`liblsfg-vulkan-interposer.so`) intercepts every `vkQueuePresentKHR(N)` call. When `AMETHYST_LSFG_V2B1_ACTIVE=2` (or `continuous` / `AMETHYST_LSFG_V2B1B_CONTINUOUS=1`) is latched at initialization:
-1. Interposer evaluates eligibility (`swapchainCount == 1`, `pNext == nullptr`, valid swapchain transport state, FIFO mode active).
+**Architecture:** Amethyst (`liblsfg-vulkan-interposer.so`) intercepts every `vkQueuePresentKHR(N)` call. When `AMETHYST_LSFG_V2B1_ACTIVE=2` is latched at initialization:
+1. Interposer evaluates eligibility (`swapchainCount == 1`, `pNext == nullptr`, valid swapchain transport state, FIFO mode active, `!transport.generationDisabled`).
 2. Interposer performs non-blocking fence polling on double-buffered `TransportSlot` execution contexts (`vkGetFenceStatus`). If a slot is in flight, the alternative slot is tested. If no slot is free, interposer performs a non-blocking pre-commit fail-open to V2B.0 FIFO pass-through.
-3. Interposer executes non-blocking `vkAcquireNextImageKHR(timeout=0)` to acquire next image index $M$. If `VK_NOT_READY` or `VK_TIMEOUT`, interposer safely fails-open to V2B.0 FIFO pass-through.
-4. If $M$ is acquired ($N \neq M$), interposer records and submits a GPU hardware copy `vkCmdCopyImage` ($N \rightarrow M$) on Queue 0, waiting on all original application render semaphores ($S_{\text{app\_render}}$) plus `slot.extraAcquireSemaphore`.
+3. Interposer executes non-blocking `vkAcquireNextImageKHR(timeout=0)` to acquire next image index $M$. If `VK_NOT_READY` or `VK_TIMEOUT`, interposer safely fails-open to V2B.0 FIFO pass-through with zero slot/fence state mutation.
+4. If $M$ is acquired:
+   - **Invariant Check:** If $M == N$, interposer logs transport invariant violation, marks `transport.generationDisabled = true`, and presents $N$ exactly ONCE via original application info (zero double presents of the same image index).
+   - **Normal Path ($M \neq N$):** Interposer records GPU hardware copy `vkCmdCopyImage` ($N \rightarrow M$) on Queue 0, resets `slot.copyFence`, and submits the copy workload waiting on all original application render semaphores ($S_{\text{app\_render}}$) plus `slot.extraAcquireSemaphore`.
 5. Copy submission signals `generatedPresentReady[M]`, `realPresentReady[N]`, and `slot.copyFence`.
 6. Interposer calls `realQueuePresentKHR(M)` waiting on `generatedPresentReady[M]`.
 7. Interposer calls `realQueuePresentKHR(N)` waiting on `realPresentReady[N]`.
@@ -31,16 +33,19 @@
 
 ### Strict Implementation Constraints
 - **Direct Continuous 1:1 Mode:** Zero intermediate sparse / every-N-frames phase. Every eligible application frame executes active transport.
-- **Rollback Preservation:**
-  - `AMETHYST_LSFG_V2B1_ACTIVE=0` or unset: V2B.0 FIFO passive baseline.
-  - `AMETHYST_LSFG_V2B1_ACTIVE=1` (or `single`): V2B.1A single-shot active baseline.
-  - `AMETHYST_LSFG_V2B1_ACTIVE=2` (or `continuous` / `AMETHYST_LSFG_V2B1B_CONTINUOUS=1`): V2B.1B continuous active transport.
+- **Single Authoritative Environment Gate:** `AMETHYST_LSFG_V2B1_ACTIVE`
+  - `0` or unset: V2B.0 FIFO passive baseline (`V2B1Mode::Disabled`).
+  - `1`: V2B.1A single-shot active baseline (`V2B1Mode::SingleShot`).
+  - `2`: V2B.1B continuous active transport (`V2B1Mode::Continuous`).
+  - Zero secondary environment flags (no `AMETHYST_LSFG_V2B1B_CONTINUOUS`).
 - **Strict Presentation Order:** COPY $N \rightarrow M$, THEN PRESENT $M$ (duplicate), THEN PRESENT $N$ (real). $N$ is NEVER presented before copy submission.
 - **Binary Semaphore Single-Consumption:** Application wait semaphores ($S_{\text{app\_render}}$) are consumed exactly ONCE by the copy submission and are NEVER passed to real present $N$.
 - **Per-Image Presentation Semaphore Lifetime Model:** Presentation semaphores are indexed by swapchain image index (`generatedPresentReady[M]`, `realPresentReady[N]`), sized dynamically to `actualImageCount` (never hardcoded to 4).
 - **Non-Blocking Slot Polling:** Reusable `TransportSlot` selection uses non-blocking `vkGetFenceStatus`. Zero `vkWaitForFences` or blocking sleeps on the main presentation thread.
+- **Deferred Fence Reset (No Slot Poisoning):** `vkResetFences` is called ONLY immediately before `vkQueueSubmit` after $M$ is acquired ($M \neq N$) and command recording succeeds. Pre-commit fallbacks (`VK_NOT_READY`, `VK_TIMEOUT`, $M == N$) NEVER reset the fence, leaving the slot clean and immediately reusable.
+- **$M == N$ Invariant Violation Policy:** If $M == N$, log invariant failure, mark `generationDisabled = true`, and present $N$ exactly ONCE via original application info. Zero duplicate presents of the same image index.
 - **Pre-Commit Fail-Open:** If all slots are in-flight or extra acquire returns `VK_NOT_READY` / `VK_TIMEOUT`, pass through immediately to original present $N$ via V2B.0.
-- **Concrete Post-Commit Recovery:** Once $M$ is acquired, $M$ is never abandoned. If copy submit fails (OOM), recovery path releases $M$ to WSI and disables active transport for that swapchain generation.
+- **Concrete Post-Commit Recovery:** Once $M$ is acquired ($M \neq N$), $M$ is never abandoned. If copy submit fails (OOM), recovery path releases $M$ to WSI and disables active transport for that swapchain generation.
 - **Zero Real Vulkan Under Mutex:** All `vkAcquireNextImageKHR`, `vkQueueSubmit`, and `vkQueuePresentKHR` calls execute strictly outside `g_stateMutex`.
 - **Zero Per-Frame Allocations & Hot-Path Logs:** Zero `malloc`, `new`, or `std::vector` allocations in present hot paths. Diagnostic block `[LSFG-V2B1]` is one-shot.
 - **Preserved Historical Counters:** `AcquireNextImageKHR` and `QueuePresentKHR` continue counting intercepted application calls. Separate internal counters track real active operations.
@@ -58,13 +63,13 @@
 
 **Interfaces & Contract Scope:**
 - Evaluates producer source `C:\Proyectos\amethyst\app_pojavlauncher\src\main\jni\lsfg_vulkan_interposer.cpp`.
-- Verifies continuous gate declaration (`AMETHYST_LSFG_V2B1_ACTIVE=2` / `continuous` / `AMETHYST_LSFG_V2B1B_CONTINUOUS=1`), one-shot latch in `lsfg_interposer_init`, zero `getenv` in hot paths.
+- Verifies single authoritative gate declaration (`AMETHYST_LSFG_V2B1_ACTIVE` with integer values 0, 1, 2), one-shot latch in `lsfg_interposer_init`, zero `getenv` in hot paths.
 - Verifies V2B.1A single-shot rollback preservation when `AMETHYST_LSFG_V2B1_ACTIVE=1`.
-- Verifies V2B.0 passive rollback preservation when `AMETHYST_LSFG_V2B1_ACTIVE=0`.
-- Verifies multiple active transport events allowed per swapchain generation in continuous mode.
+- Verifies V2B.0 passive rollback preservation when `AMETHYST_LSFG_V2B1_ACTIVE=0` or unset.
+- Verifies multiple active transport events allowed per swapchain generation in continuous mode (`mode == V2B1Mode::Continuous`).
 - Verifies non-blocking slot search using `vkGetFenceStatus` and pre-commit fail-open if all slots are in flight.
-- Verifies non-blocking extra acquire (`timeout = 0`) and fail-open on `VK_NOT_READY` / `VK_TIMEOUT`.
-- Verifies $N \neq M$ assertion and post-commit state boundary.
+- Verifies deferred fence reset: `vkResetFences` executed only on committed submit path, preventing slot poisoning on `VK_NOT_READY` / `VK_TIMEOUT`.
+- Verifies $M == N$ invariant violation handling: zero double presents of the same image index, generation marked disabled, single-present pass-through.
 - Verifies exact presentation order: Copy submit $\rightarrow$ Present $M$ $\rightarrow$ Present $N$.
 - Verifies single-consumption of application wait semaphores by copy submit.
 - Verifies presentation semaphores are image-indexed (`generatedPresentReady[M]`, `realPresentReady[N]`).
@@ -96,7 +101,7 @@
 - [MODIFY] `C:\Proyectos\amethyst\app_pojavlauncher\src\main\jni\lsfg_vulkan_interposer.cpp`
 
 **Interfaces & Changes:**
-- Declare mode enumeration and atomic variables:
+- Declare mode enumeration and single atomic variable:
   ```cpp
   enum class V2B1Mode : uint32_t {
       Disabled = 0,
@@ -104,14 +109,12 @@
       Continuous = 2
   };
   std::atomic<V2B1Mode> g_v2b1Mode{V2B1Mode::Disabled};
-  std::atomic<bool> g_v2b1ContinuousEnabled{false};
   ```
 - In `lsfg_interposer_init()`:
   - Parse `AMETHYST_LSFG_V2B1_ACTIVE`:
-    - `"2"` or `"continuous"` $\rightarrow$ `g_v2b1Mode.store(V2B1Mode::Continuous)`, `g_v2b1ActiveTransportEnabled.store(true)`, `g_v2b1ContinuousEnabled.store(true)`.
-    - `"1"` or `"single"` or `"true"` $\rightarrow$ `g_v2b1Mode.store(V2B1Mode::SingleShot)`, `g_v2b1ActiveTransportEnabled.store(true)`, `g_v2b1ContinuousEnabled.store(false)`.
-  - Parse `AMETHYST_LSFG_V2B1B_CONTINUOUS`:
-    - `"1"` or `"true"` $\rightarrow$ `g_v2b1Mode.store(V2B1Mode::Continuous)`, `g_v2b1ActiveTransportEnabled.store(true)`, `g_v2b1ContinuousEnabled.store(true)`.
+    - `"2"` $\rightarrow$ `g_v2b1Mode.store(V2B1Mode::Continuous)`, `g_v2b1ActiveTransportEnabled.store(true)`.
+    - `"1"` $\rightarrow$ `g_v2b1Mode.store(V2B1Mode::SingleShot)`, `g_v2b1ActiveTransportEnabled.store(true)`.
+    - `"0"` or unset $\rightarrow$ `g_v2b1Mode.store(V2B1Mode::Disabled)`, `g_v2b1ActiveTransportEnabled.store(false)`.
   - Log initialization mode cleanly.
 
 **Step 2.1 — Run Contract Test to verify progression:**
@@ -132,11 +135,11 @@
 
 **Interfaces & Changes:**
 - In `V2B1TransportState`:
-  - Add `bool generationDisabled{false};` to cleanly track post-commit fault state per swapchain.
+  - Add `bool generationDisabled{false};` to track post-commit fault state per swapchain.
 - In `interposer_vkQueuePresentKHR`:
   - Condition continuous active transport on:
-    `v2b1Gate && (!v2b1Completed || isContinuous) && !transport.generationDisabled && pPresentInfo != nullptr && pPresentInfo->swapchainCount == 1 && pPresentInfo->pNext == nullptr`
-  - Implement non-blocking slot search:
+    `mode != V2B1Mode::Disabled && (mode == V2B1Mode::Continuous || !v2b1Completed) && !transport.generationDisabled && pPresentInfo != nullptr && pPresentInfo->swapchainCount == 1 && pPresentInfo->pNext == nullptr`
+  - Implement non-blocking slot search without early fence reset:
     ```cpp
     uint32_t selectedSlot = UINT32_MAX;
     for (uint32_t i = 0; i < transport.kSlotCount; ++i) {
@@ -156,21 +159,18 @@
         return realFunc(queue, pPresentInfo); // Safe pre-commit fail-open
     }
     ```
-  - Reset fence on selected slot outside mutex:
-    `transport.resetFences(transport.device, 1, &transport.slots[selectedSlot].copyFence);`
-  - Advance `transport.currentSlot = (selectedSlot + 1) % transport.kSlotCount;`
-  - If in single-shot mode (`!isContinuous`), set `g_v2b1aCompleted.store(true)`.
+  - Note: `slot.copyFence` is NOT reset here. It remains signaled until right before `vkQueueSubmit`.
 
 **Step 3.1 — Run Contract Test to verify progression:**
 - [ ] **Run Command:**
   ```powershell
   powershell -ExecutionPolicy Bypass -File C:\Proyectos\SGSR\native\lsfg-android\v2b1b_contract_test.ps1 -Stage full
   ```
-- [ ] **Expected Partial Progress:** Slot selection and continuous presentation checks PASS.
+- [ ] **Expected Partial Progress:** Slot selection checks PASS.
 
 ---
 
-### Task 4: Implement Continuous Post-Commit Fault Handling & Generation Disabling
+### Task 4: Implement Invariant Violation Handling, Deferred Fence Reset, and Committed Submission
 
 **Repository:** `C:\Proyectos\amethyst`  
 **Branch:** `feature/lsfg-vulkan-interposer`  
@@ -179,31 +179,46 @@
 
 **Interfaces & Changes:**
 - In `interposer_vkQueuePresentKHR`:
-  - If $M == N$ or $M \ge \text{imageCount}$:
-    - Increment `g_v2b1PostCommitFailure`.
-    - Mark swapchain generation disabled:
+  - Execute non-blocking acquire:
+    `VkResult resAcquire = transport.acquire(transport.device, swapchain, 0, slot.extraAcquireSemaphore, VK_NULL_HANDLE, &M);`
+  - If `resAcquire == VK_NOT_READY || resAcquire == VK_TIMEOUT`:
+    - Increment `g_v2b1ExtraAcquireNotReady` and `g_v2b1Fallback`.
+    - Fail-open immediately: `return realFunc(queue, pPresentInfo);`.
+    - (Fence was not reset and semaphore was not signaled; slot remains 100% reusable).
+  - If `resAcquire == VK_SUCCESS || resAcquire == VK_SUBOPTIMAL_KHR`:
+    - **Handle $M == N$ (Invariant Violation):**
       ```cpp
-      {
-          std::lock_guard<std::mutex> lock(g_stateMutex);
-          g_swapchainTransportState[swapchain].generationDisabled = true;
+      if (M == N || M >= transport.imageCount) {
+          g_v2b1InvariantViolation.fetch_add(1, std::memory_order_relaxed);
+          g_v2b1PostCommitFailure.fetch_add(1, std::memory_order_relaxed);
+          {
+              std::lock_guard<std::mutex> lock(g_stateMutex);
+              g_swapchainTransportState[swapchain].generationDisabled = true;
+          }
+          if (mode == V2B1Mode::SingleShot) {
+              g_v2b1aCompleted.store(true, std::memory_order_relaxed);
+          }
+          // Single legal present: Present N once with original app info (zero double presents)
+          return realFunc(queue, pPresentInfo);
       }
       ```
-    - Present $M$ via emergency present to return ownership to WSI.
-    - Present $N$ via pass-through.
-  - If `queueSubmit` fails:
-    - If `VK_ERROR_DEVICE_LOST`, return `VK_ERROR_DEVICE_LOST`.
-    - If other failure (e.g. OOM):
-      - Increment `g_v2b1PostCommitFailure`.
-      - Mark swapchain generation disabled.
-      - Present $M$ with recovery command buffer.
-      - Present $N$ with original wait semaphores.
+    - **Committed Submission Path ($M \neq N$):**
+      - Record copy command buffer `vkCmdCopyImage`.
+      - **Reset copy fence immediately before submit:**
+        `transport.resetFences(transport.device, 1, &slot.copyFence);`
+      - Submit copy workload with `slot.copyFence`.
+      - Advance `transport.currentSlot = (selectedSlot + 1) % transport.kSlotCount;`
+      - If in single-shot mode (`mode == V2B1Mode::SingleShot`), set `g_v2b1aCompleted.store(true)`.
+      - Present $M$ with `generatedPresentReady[M]`.
+      - Present $N$ with `realPresentReady[N]`.
+      - Return result of $N$.
 
 **Step 4.1 — Run Contract Test to verify progression:**
 - [ ] **Run Command:**
   ```powershell
   powershell -ExecutionPolicy Bypass -File C:\Proyectos\SGSR\native\lsfg-android\v2b1b_contract_test.ps1 -Stage full
   ```
-- [ ] **Expected Partial Progress:** Fault handling and recovery checks PASS.
+- [ ] **Expected Partial Progress:** Invariant check, fence reset, and presentation checks PASS.
 
 ---
 
@@ -219,11 +234,12 @@
   ```cpp
   std::atomic<uint32_t> g_v2b1SlotUnavailable{0};
   std::atomic<uint32_t> g_v2b1ExtraAcquireNotReady{0};
+  std::atomic<uint32_t> g_v2b1InvariantViolation{0};
   std::atomic<uint32_t> g_v2b1GenerationDisabled{0};
   ```
 - In `lsfg_interposer_log_summary()`:
   - Add counters to both `LOGI` and `printf`:
-    `v2b1Mode=%u v2b1Continuous=%u v2b1SlotUnavailable=%u v2b1ExtraAcquireNotReady=%u v2b1GenerationDisabled=%u`
+    `v2b1Mode=%u v2b1SlotUnavailable=%u v2b1ExtraAcquireNotReady=%u v2b1InvariantViolation=%u v2b1GenerationDisabled=%u`
   - Flush stdout.
 
 **Step 5.1 — Run Contract Test:**
@@ -290,7 +306,7 @@
 ## Verification Plan
 
 ### Automated Contract Tests
-- `v2b1b_contract_test.ps1`: Full contract verification for continuous 1:1 transport, non-blocking slot polling, re-acquisition safety, and fault generation disabling.
+- `v2b1b_contract_test.ps1`: Full contract verification for continuous 1:1 transport, single authoritative gate, deferred fence reset, $M == N$ invariant violation handling, and fault generation disabling.
 - `v2b1a_contract_test.ps1`: Regression verification for single-shot limiter behavior.
 - `v2b0_contract_test.ps1`: Regression verification for FIFO override baseline.
 - `v2a1_contract_test.ps1`: Regression verification for metadata snapshot completeness.
