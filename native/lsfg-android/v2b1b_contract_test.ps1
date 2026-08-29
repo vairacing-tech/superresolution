@@ -213,7 +213,7 @@ function Test-V2B1BPerImagePresentationSemaphores {
 
     $indexesM = ($presentFn -match 'imagePresentation\s*\[\s*M\s*\]\s*\.\s*generatedPresentReady')
     $indexesN = ($presentFn -match 'imagePresentation\s*\[\s*N\s*\]\s*\.\s*realPresentReady')
-    $dynamicSizing = ($clean -match 'imagePresentation\s*\.\s*resize\s*\(\s*actualImageCount') -or ($clean -match 'imagePresentation\s*\[\s*actualImageCount')
+    $dynamicSizing = ($clean -match 'imagePresentation\s*\.\s*resize\s*\(\s*(imageCount|actualImageCount)') -or ($clean -match 'imagePresentation\s*\[\s*(imageCount|actualImageCount)')
 
     return ($indexesM -and $indexesN -and $dynamicSizing)
 }

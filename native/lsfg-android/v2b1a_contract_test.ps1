@@ -116,7 +116,7 @@ function Test-V2B1PreCommitEligibility {
     $presentFn = Get-CppFunctionBody $Source 'interposer_vkQueuePresentKHR'
     if ($null -eq $presentFn) { return $false }
     
-    $checksGate = ($presentFn -match 'g_v2b1ActiveTransportEnabled')
+    $checksGate = ($presentFn -match 'g_v2b1ActiveTransportEnabled') -or ($presentFn -match 'g_v2b1Mode')
     $checksLimiter = ($presentFn -match 'g_v2b1aCompleted')
     $checksSwapchainCount = ($presentFn -match 'swapchainCount\s*==\s*1')
     $checksPNext = ($presentFn -match 'pNext\s*==\s*nullptr')
