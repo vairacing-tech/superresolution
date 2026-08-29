@@ -237,6 +237,36 @@ function Test-V2B1BSummaryCounters {
     return $true
 }
 
+function Test-V2B1BHotPathCleanliness {
+    param([string]$Source)
+    $presentFn = Get-CppFunctionBody $Source 'interposer_vkQueuePresentKHR'
+    if ($null -eq $presentFn) { return $false }
+
+    $forbidden = @(
+        'malloc\s*\(', 'new\s+[a-zA-Z0-9_]+', 'getenv\s*\(', 'dlsym\s*\(',
+        'waitForFences', 'vkWaitForFences', 'queueWaitIdle', 'vkQueueWaitIdle',
+        'deviceWaitIdle', 'vkDeviceWaitIdle'
+    )
+    foreach ($f in $forbidden) {
+        if ($presentFn -match $f) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Test-V2B1BResultsAndSuboptimalPreservation {
+    param([string]$Source)
+    $presentFn = Get-CppFunctionBody $Source 'interposer_vkQueuePresentKHR'
+    if ($null -eq $presentFn) { return $false }
+
+    $preservesAppResults = ($presentFn -match 'presentN\s*\.\s*pResults\s*=\s*pPresentInfo\s*->\s*pResults')
+    $usesLocalResultM = ($presentFn -match 'presentM\s*\.\s*pResults\s*=\s*&localResultM')
+    $handlesSuboptimal = ($presentFn -match 'VK_SUBOPTIMAL_KHR')
+
+    return ($preservesAppResults -and $usesLocalResultM -and $handlesSuboptimal)
+}
+
 function Test-V2B1BZeroRealVulkanUnderMutex {
     param([string]$Source)
     $clean = Remove-CppTrivia $Source
@@ -330,25 +360,29 @@ VkResult interposer_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPr
         if (fRes != VK_SUCCESS) return realFunc(queue, pPresentInfo);
         VkResult resAcq = transport.acquire(device, swapchain, 0, slot.extraAcquireSemaphore, 0, &M);
         if (resAcq == VK_NOT_READY || resAcq == VK_TIMEOUT) return realFunc(queue, pPresentInfo);
-        if (M == N || M >= transport.imageCount) {
-            g_v2b1InvariantViolation.fetch_add(1);
-            transport.generationDisabled = true;
-            return realFunc(queue, pPresentInfo);
+        if (resAcq == VK_SUCCESS || resAcq == VK_SUBOPTIMAL_KHR) {
+            if (M == N || M >= transport.imageCount) {
+                g_v2b1InvariantViolation.fetch_add(1);
+                transport.generationDisabled = true;
+                return realFunc(queue, pPresentInfo);
+            }
+            realCmdCopyImage();
+            transport.resetFences(transport.device, 1, &slot.copyFence);
+            VkSubmitInfo submitInfo{};
+            submitInfo.pWaitSemaphores = pPresentInfo->pWaitSemaphores;
+            realQueueSubmit(queue, 1, &submitInfo, slot.copyFence);
+            if (mode == V2B1Mode::SingleShot) g_v2b1aCompleted.store(true);
+            VkResult localResultM = VK_SUCCESS;
+            VkPresentInfoKHR piM{};
+            piM.pWaitSemaphores = &imagePresentation[M].generatedPresentReady;
+            piM.pResults = &localResultM;
+            realQueuePresent(queue, &piM);
+            VkPresentInfoKHR piN{};
+            piN.pResults = pPresentInfo->pResults;
+            piN.pWaitSemaphores = &imagePresentation[N].realPresentReady;
+            VkResult resN = realQueuePresent(queue, &piN);
+            return resN;
         }
-        realCmdCopyImage();
-        transport.resetFences(transport.device, 1, &slot.copyFence);
-        VkSubmitInfo submitInfo{};
-        submitInfo.pWaitSemaphores = pPresentInfo->pWaitSemaphores;
-        realQueueSubmit(queue, 1, &submitInfo, slot.copyFence);
-        if (mode == V2B1Mode::SingleShot) g_v2b1aCompleted.store(true);
-        VkPresentInfoKHR piM{};
-        piM.pWaitSemaphores = &imagePresentation[M].generatedPresentReady;
-        realQueuePresent(queue, &piM);
-        VkPresentInfoKHR piN{};
-        piN.pResults = pPresentInfo->pResults;
-        piN.pWaitSemaphores = &imagePresentation[N].realPresentReady;
-        VkResult resN = realQueuePresent(queue, &piN);
-        return resN;
     }
     return realFunc(queue, pPresentInfo);
 }
@@ -364,6 +398,8 @@ Run-SelfCheck "invariant detector accepts M==N check and single present pass-thr
 Run-SelfCheck "continuous multi-event detector accepts mode branching and generationDisabled check" (Test-V2B1BContinuousMultiEvent $mockValidContinuousSource)
 Run-SelfCheck "ordering detector verifies Acquire -> CopySubmit -> Present M -> Present N" (Test-V2B1BCopyAndPresentationOrdering $mockValidContinuousSource)
 Run-SelfCheck "summary detector accepts all required V2B.1B continuous telemetry counters" (Test-V2B1BSummaryCounters $mockValidContinuousSource)
+Run-SelfCheck "hot-path cleanliness detector verifies zero malloc/getenv/dlsym/blocking waits" (Test-V2B1BHotPathCleanliness $mockValidContinuousSource)
+Run-SelfCheck "results and suboptimal detector verifies pResults preservation and SUBOPTIMAL handling" (Test-V2B1BResultsAndSuboptimalPreservation $mockValidContinuousSource)
 
 if ($Stage -eq 'self') {
     Write-Output "Self-check completed: $selfChecksPassed passed, $selfChecksFailed failed."
@@ -395,6 +431,8 @@ Run-Check "single-consumption of application wait semaphores by copy submit" (Te
 Run-Check "per-image indexed presentation semaphores with dynamic actualImageCount sizing" (Test-V2B1BPerImagePresentationSemaphores $producerSrc)
 Run-Check "all required V2B.1B continuous telemetry counters present in lsfg_interposer_log_summary" (Test-V2B1BSummaryCounters $producerSrc)
 Run-Check "zero real Vulkan driver calls under g_stateMutex" (Test-V2B1BZeroRealVulkanUnderMutex $producerSrc)
+Run-Check "zero hot-path allocations, getenv, dlsym, or blocking waits in presentation" (Test-V2B1BHotPathCleanliness $producerSrc)
+Run-Check "caller pResults preserved for N and VK_SUBOPTIMAL_KHR handled gracefully" (Test-V2B1BResultsAndSuboptimalPreservation $producerSrc)
 
 Write-Output "`nSUMMARY checks=$($checksPassed + $checksFailed) failures=$checksFailed"
 if ($checksFailed -gt 0) {
