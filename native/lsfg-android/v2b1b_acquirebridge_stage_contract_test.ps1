@@ -89,7 +89,7 @@ function Test-V2B1BAcquireBridgeStagePreallocation {
     if ($null -eq $createSwapchainFn -or $null -eq $destroySwapchainFn) { return $false }
 
     $hasSlotMembers = ($clean -match 'VkSemaphore\s+acquireReadySemaphore')
-    $hasCmdMember = ($clean -match 'VkCommandBuffer\s+diagAcquireReadyCommandBuffer')
+    $hasCmdMember = ($clean -match 'VkCommandBuffer\s+acquireBridgeCommandBuffer|VkCommandBuffer\s+diagAcquireReadyCommandBuffer')
     $hasCreate = ($createSwapchainFn -match 'acquireReadySemaphore')
     $hasDestroy = ($destroySwapchainFn -match 'acquireReadySemaphore')
 
