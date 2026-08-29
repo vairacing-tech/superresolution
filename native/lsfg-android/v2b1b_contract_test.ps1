@@ -260,8 +260,8 @@ function Test-V2B1BResultsAndSuboptimalPreservation {
     $presentFn = Get-CppFunctionBody $Source 'interposer_vkQueuePresentKHR'
     if ($null -eq $presentFn) { return $false }
 
-    $preservesAppResults = ($presentFn -match 'presentN\s*\.\s*pResults\s*=\s*pPresentInfo\s*->\s*pResults')
-    $usesLocalResultM = ($presentFn -match 'presentM\s*\.\s*pResults\s*=\s*&localResultM')
+    $preservesAppResults = ($presentFn -match '(presentN|piN)\s*\.\s*pResults\s*=\s*pPresentInfo\s*->\s*pResults')
+    $usesLocalResultM = ($presentFn -match '(presentM|piM)\s*\.\s*pResults\s*=\s*&localResultM')
     $handlesSuboptimal = ($presentFn -match 'VK_SUBOPTIMAL_KHR')
 
     return ($preservesAppResults -and $usesLocalResultM -and $handlesSuboptimal)
