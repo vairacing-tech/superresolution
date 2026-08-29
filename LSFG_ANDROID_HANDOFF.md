@@ -8,29 +8,41 @@
 
 ---
 
-## 0. CURRENT VALIDATION STATUS & CONTINUATION POINT
+## 0. CURRENT VALIDATION STATUS & PHASE CLOSURE
 
 > [!IMPORTANT]
 > **MILESTONE STATUS (August 29, 2026)**:
-> **LSFG V2B.1B Production Duplicate/Copy Transport: PHYSICALLY VALIDATED**
+> **LSFG V2B.1B PRODUCTION TRANSPORT CLEANUP — PHYSICALLY VALIDATED AND PHASE CLOSED**
 >
-> - **Target Platform**: AYN Odin 2 Portal (Snapdragon 8 Gen 2 / Adreno 740), Android API 33
-> - **Graphics Stack**: Turnip Vulkan Driver (PurpleVK) + Mesa Zink + Minecraft 26.2 + Fabric 0.19.3 + Iris Shaders + SGSR1
-> - **Production Continuous Run Results (Mode 2)**:
->   - 5,780 successful active duplicate transport cycles (98.75% active success ratio)
->   - 73 pre-commit `VK_NOT_READY` / `VK_TIMEOUT` fallbacks (1.25% graceful fail-open)
->   - 0 slot unavailable incidents
->   - 0 post-commit failures
->   - 0 invariant violations
->   - 0 `VK_ERROR_DEVICE_LOST`
->   - 0 `kgsl_syncobj_merge` synchronization crashes
->   - Clean shutdown with zero errors
+> - **Tested APK Candidate**: `clean-v2b1b-production-cleanup.apk`
+> - **Tested APK SHA-256**: `D2B38EC20628D5163CEAE732667BA99BC12A1DFAF5361FCA92DBF0547B0DCA86`
+> - **Target Platform / Stack**:
+>   - Device: AYN Odin 2 Portal (Qualcomm Snapdragon 8 Gen 2 / Adreno 740)
+>   - OS: Android API 33
+>   - Vulkan Driver: Turnip Driver via PurpleVK (`vulkan.purple.so`)
+>   - Translation Layer: Mesa Zink (`libEGL_mesa.so` / `libgallium_dri.so`, OpenGL 4.6 on Vulkan)
+>   - Game & Mods: Minecraft 26.2 + Fabric 0.19.3 + Iris Shaders + SGSR1
+>   - Launcher: Amethyst Plus Debug (`com.vairacing.amethystplus.debug`)
+> - **Production Configuration**:
+>   ```text
+>   AMETHYST_LSFG_VULKAN_INTERPOSER=1
+>   AMETHYST_LSFG_V2B0_FIFO=1
+>   AMETHYST_LSFG_V2B1_ACTIVE=2
+>   ```
+>   *(Zero `DIAG_*` variables required)*
+> - **Physical Validation Results**:
+>   - Clean launcher startup and Minecraft launch over WiFi ADB.
+>   - Flawless in-game rendering in `Mundo nuevo` without graphical corruption.
+>   - Zero crashes, zero freezes, zero deadlocks, zero SIGSEGV, zero `kgsl_syncobj_merge` driver faults.
+>   - Structural resource normalization (`diagAcquireReadyCommandBuffer` $\to$ `acquireBridgeCommandBuffer`) physically verified.
+>   - Full clean shutdown.
 >
-> **Architectural Guarantee & Workaround Context**:
-> The production Extra-Acquire Bridge (`slot.extraAcquireSemaphore` $\to$ single-wait bridge submit $\to$ `slot.acquireReadySemaphore` $\to$ multi-wait copy submit) reliably eliminates the Turnip/KGSL multi-wait WSI crash on this tested stack. Real LSFG frame interpolation (compute optical flow / SPIR-V kernels) is not yet active (current transport executes 1:1 duplicate/copy $N \to M$).
+> **Scope & Architectural Boundaries**:
+> 1. **Hardware/Driver Specificity**: Physical validation applies specifically to the tested Odin 2 Portal / Adreno 740 / Turnip stack; universal Vulkan driver compatibility is neither claimed nor implied.
+> 2. **Real Frame Generation Status**: **NOT IMPLEMENTED**. The current active transport executes 1:1 duplicate/copy transport ($N \to M$) to prove Vulkan presentation and synchronization integrity.
 >
-> **Next Milestone**:
-> Phase A (Resource normalization & cleanup) followed by Phase B (Real LSFG compute interpolation integration).
+> **Next Planned Phase**:
+> **Phase B: Real Frame Generation Integration** (SPIR-V Vulkan compute kernels, optical flow interpolation, metadata capture, and synthesized present frames).
 
 ---
 
