@@ -112,7 +112,7 @@ function Test-V2B1BSlotPollingAndDeferredFenceReset {
     # Check ordering: acquire must appear BEFORE resetFences
     $matchAcquire = [regex]::Match($presentFn, '(\.acquire|realAcquireNextImage)\s*\(')
     $matchResetFences = [regex]::Match($presentFn, '(\.resetFences|resetFences)\s*\(')
-    $matchSubmit = [regex]::Match($presentFn, '(\.queueSubmit|realQueueSubmit)\s*\(')
+    $matchSubmit = [regex]::Match($presentFn, '(\.queueSubmit|realQueueSubmit)\s*\([^;]*?copyFence')
 
     if (-not $matchAcquire.Success -or -not $matchResetFences.Success -or -not $matchSubmit.Success) {
         return $false
