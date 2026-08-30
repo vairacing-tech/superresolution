@@ -104,8 +104,8 @@ function Test-NCaptureAndPreservation {
     if ($null -eq $presentFn) { return $false }
 
     $hasCopyNToH = ($presentFn -match 'cmdCopyImage\(cmdBuf,\s*transport\.swapchainImages\[N\],\s*VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,\s*slot\.capturedImage,\s*VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,\s*1,\s*&copyRegion\)')
-    $hasNNotUndefined = -not ($presentFn -match 'image\s*=\s*transport\.swapchainImages\[N\];\s*preBarriers\[.*?\]\.oldLayout\s*=\s*VK_IMAGE_LAYOUT_UNDEFINED')
-    $hasNRestore = ($presentFn -match 'postBarriers\[.*?\]\.newLayout\s*=\s*VK_IMAGE_LAYOUT_PRESENT_SRC_KHR') -or ($presentFn -match 'image\s*=\s*transport\.swapchainImages\[N\]')
+    $hasNNotUndefined = -not ($presentFn -match 'image\s*=\s*transport\.swapchainImages\[N\];\s*preBarriers\[.*?\].oldLayout\s*=\s*VK_IMAGE_LAYOUT_UNDEFINED')
+    $hasNRestore = ($presentFn -match 'postBarriers\[.*?\].newLayout\s*=\s*VK_IMAGE_LAYOUT_PRESENT_SRC_KHR') -or ($presentFn -match 'image\s*=\s*transport\.swapchainImages\[N\]')
 
     return ($hasCopyNToH -and $hasNNotUndefined -and $hasNRestore)
 }
@@ -123,6 +123,19 @@ function Test-B2AExecutionChainAndDualPresent {
     $orderCorrect = ($mIdx -ge 0 -and $nIdx -gt $mIdx)
 
     return ($hasB2aBranch -and $hasCopyGToM -and $orderCorrect)
+}
+
+function Test-AppWaitStagesIncludeTransferAndAcquireBridge {
+    param([string]$Source)
+    $presentFn = Get-CppFunctionBody $Source 'interposer_vkQueuePresentKHR'
+    if ($null -eq $presentFn) { return $false }
+
+    # Application wait stages must explicitly include VK_PIPELINE_STAGE_TRANSFER_BIT
+    $hasAppWaitTransfer = ($presentFn -match 'waitStages\[waitCount\]\s*=\s*[^;]*VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT\s*\|\s*VK_PIPELINE_STAGE_TRANSFER_BIT') -or
+                          ($presentFn -match 'waitStages\[waitCount\]\s*=\s*[^;]*VK_PIPELINE_STAGE_TRANSFER_BIT\s*\|\s*VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT')
+    $hasAcqReadyTransfer = ($presentFn -match 'slot\.acquireReadySemaphore') -and ($presentFn -match 'VK_PIPELINE_STAGE_TRANSFER_BIT')
+
+    return ($hasAppWaitTransfer -and $hasAcqReadyTransfer)
 }
 
 function Test-FailOpenAndHotPathHygiene {
@@ -145,7 +158,7 @@ if (-not (Test-Path $ProducerSource)) {
 $source = Get-Content $ProducerSource -Raw
 $allPassed = $true
 
-Write-Host "[Contract 1/6] B2A Gates and B1A Checkpoint Preservation..." -NoNewline
+Write-Host "[Contract 1/7] B2A Gates and B1A Checkpoint Preservation..." -NoNewline
 if (Test-B2AGatesAndB1APreservation $source) {
     Write-Host " PASS" -ForegroundColor Green
 } else {
@@ -153,7 +166,7 @@ if (Test-B2AGatesAndB1APreservation $source) {
     $allPassed = $false
 }
 
-Write-Host "[Contract 2/6] B2A Shader, imageLoad(H) Inversion, and SPIR-V Header..." -NoNewline
+Write-Host "[Contract 2/7] B2A Shader, imageLoad(H) Inversion, and SPIR-V Header..." -NoNewline
 if (Test-B2AShaderAndSpirv $ShaderSource $SpirvHeader $B1aShaderSource $B1aSpirvHeader) {
     Write-Host " PASS" -ForegroundColor Green
 } else {
@@ -161,7 +174,7 @@ if (Test-B2AShaderAndSpirv $ShaderSource $SpirvHeader $B1aShaderSource $B1aSpirv
     $allPassed = $false
 }
 
-Write-Host "[Contract 3/6] H Capture Resource (R8G8B8A8_UNORM) and Storage Descriptors..." -NoNewline
+Write-Host "[Contract 3/7] H Capture Resource (R8G8B8A8_UNORM) and Storage Descriptors..." -NoNewline
 if (Test-HCaptureResourceAndDescriptors $source) {
     Write-Host " PASS" -ForegroundColor Green
 } else {
@@ -169,7 +182,7 @@ if (Test-HCaptureResourceAndDescriptors $source) {
     $allPassed = $false
 }
 
-Write-Host "[Contract 4/6] N -> H vkCmdCopyImage, N Retained (Not UNDEFINED), N Restored..." -NoNewline
+Write-Host "[Contract 4/7] N -> H vkCmdCopyImage, N Retained (Not UNDEFINED), N Restored..." -NoNewline
 if (Test-NCaptureAndPreservation $source) {
     Write-Host " PASS" -ForegroundColor Green
 } else {
@@ -177,7 +190,7 @@ if (Test-NCaptureAndPreservation $source) {
     $allPassed = $false
 }
 
-Write-Host "[Contract 5/6] B2A Execution Chain (N->H, Compute, G->M) and Dual Present (M then N)..." -NoNewline
+Write-Host "[Contract 5/7] B2A Execution Chain (N->H, Compute, G->M) and Dual Present (M then N)..." -NoNewline
 if (Test-B2AExecutionChainAndDualPresent $source) {
     Write-Host " PASS" -ForegroundColor Green
 } else {
@@ -185,7 +198,15 @@ if (Test-B2AExecutionChainAndDualPresent $source) {
     $allPassed = $false
 }
 
-Write-Host "[Contract 6/6] Production Acquire Bridge, Fail-Open, and Zero Hot-Path Waits/Allocations..." -NoNewline
+Write-Host "[Contract 6/7] App Semaphore Wait Stages Cover TRANSFER_BIT and AcquireBridge..." -NoNewline
+if (Test-AppWaitStagesIncludeTransferAndAcquireBridge $source) {
+    Write-Host " PASS" -ForegroundColor Green
+} else {
+    Write-Host " FAIL" -ForegroundColor Red
+    $allPassed = $false
+}
+
+Write-Host "[Contract 7/7] Production Acquire Bridge, Fail-Open, and Zero Hot-Path Waits/Allocations..." -NoNewline
 if (Test-FailOpenAndHotPathHygiene $source) {
     Write-Host " PASS" -ForegroundColor Green
 } else {
