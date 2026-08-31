@@ -1,4 +1,4 @@
-﻿# ==============================================================================
+# ==============================================================================
 # LSFG V2B.1B Phase B2B Two-Frame History Ingestion Proof Contract Test
 # ==============================================================================
 param(
@@ -48,6 +48,38 @@ function Get-CppFunctionBody {
 
     if ($braceCount -eq 0) {
         return $clean.Substring($start, $index - $start)
+    }
+    return $null
+}
+
+function Get-CppBlock {
+    param(
+        [string]$Source,
+        [string]$HeaderRegex
+    )
+    $match = [regex]::Match($Source, $HeaderRegex)
+    if (-not $match.Success) {
+        return $null
+    }
+    $start = $Source.IndexOf('{', $match.Index)
+    if ($start -lt 0) { return $null }
+
+    $braceCount = 1
+    $index = $start + 1
+    $length = $Source.Length
+
+    while ($index -lt $length -and $braceCount -gt 0) {
+        $ch = $Source[$index]
+        if ($ch -eq '{') {
+            $braceCount++
+        } elseif ($ch -eq '}') {
+            $braceCount--
+        }
+        $index++
+    }
+
+    if ($braceCount -eq 0) {
+        return $Source.Substring($start, $index - $start)
     }
     return $null
 }
@@ -102,38 +134,70 @@ function Test-DedicatedHistoryResourceAndDescriptors {
     return ($hasHistoryImg -and $hasSlotB2bDesc -and $hasHistoryFormat -and $hasHistoryUsage -and $hasB2bPipeline)
 }
 
-function Test-FirstEventSeedAndHistorySequencing {
+function Test-B2BSpecificDispatchAndOrdering {
     param([string]$Source)
     $presentFn = Get-CppFunctionBody $Source 'interposer_vkQueuePresentKHR'
     if ($null -eq $presentFn) { return $false }
 
-    $hasSeedCheck = ($presentFn -match 'b2bHistoryValid') -and ($presentFn -match 'g_b2bSeed')
-    $hasHistoryUpdate = ($presentFn -match 'cmdCopyImage\s*\([^,]+,\s*slot\.capturedImage,\s*VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,\s*transport\.b2bHistoryImage,\s*VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL')
-    $hasHistoryUpdateCounter = ($presentFn -match 'g_b2bHistoryUpdate')
+    $b2bBlock = Get-CppBlock $presentFn 'else\s+if\s*\(\s*isB2bActive\s*\)'
+    if ($null -eq $b2bBlock) { return $false }
 
-    # Ensure compute dispatch occurs BEFORE history update copy
-    $dispatchIdx = $presentFn.IndexOf('cmdDispatch(cmdBuf')
-    $histCopyIdx = $presentFn.IndexOf('transport.b2bHistoryImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL')
-    $orderCorrect = ($dispatchIdx -ge 0 -and $histCopyIdx -gt $dispatchIdx)
+    # Structurally verify B2B pipeline bind and dispatch inside the B2B block
+    $bindPipelineMatch = $b2bBlock -match 'cmdBindPipeline\s*\([^,]+,\s*VK_PIPELINE_BIND_POINT_COMPUTE,\s*transport\.b2bComputePipeline\)'
+    $bindDescMatch = $b2bBlock -match 'cmdBindDescriptorSets\s*\([^,]+,\s*VK_PIPELINE_BIND_POINT_COMPUTE,\s*transport\.b2bPipelineLayout,\s*0,\s*1,\s*&slot\.b2bDescriptorSet'
+    $dispatchMatch = $b2bBlock -match 'cmdDispatch\s*\([^,]+,\s*groupCountX,\s*groupCountY,\s*1\)'
 
-    return ($hasSeedCheck -and $hasHistoryUpdate -and $hasHistoryUpdateCounter -and $orderCorrect)
+    if (-not ($bindPipelineMatch -and $bindDescMatch -and $dispatchMatch)) {
+        return $false
+    }
+
+    # Verify strict intra-event ordering:
+    # 1. Capture real frame N -> C (cmdCopyImage with swapchainImages[N] -> slot.capturedImage)
+    # 2. B2B Compute Dispatch
+    # 3. Output G -> M (cmdCopyImage with slot.generatedImage -> swapchainImages[M])
+    # 4. History Update C -> P (cmdCopyImage with slot.capturedImage -> transport.b2bHistoryImage)
+    $idxCapture = $b2bBlock.IndexOf('slot.capturedImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL')
+    $idxDispatch = $b2bBlock.IndexOf('transport.b2bComputePipeline')
+    $idxOutputG = $b2bBlock.IndexOf('transport.swapchainImages[M], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL')
+    $idxUpdateP = if ($idxDispatch -ge 0) { $b2bBlock.IndexOf('transport.b2bHistoryImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL', $idxDispatch) } else { -1 }
+
+    $orderingOk = ($idxCapture -ge 0) -and ($idxDispatch -gt $idxCapture) -and
+                  ($idxOutputG -gt $idxDispatch) -and ($idxUpdateP -gt $idxOutputG)
+
+    return $orderingOk
 }
 
-function Test-B2BReadbackProofAndFourFileExport {
+function Test-TemporalReadbackCaptureAndFenceExport {
     param([string]$Source)
-    $clean = Remove-CppTrivia $Source
-    $hasReadbackBuffers = ($clean -match 'b2bReadbackPrevCBuffer') -and
-                          ($clean -match 'b2bReadbackPBuffer') -and
-                          ($clean -match 'b2bReadbackCBuffer') -and
-                          ($clean -match 'b2bReadbackGBuffer')
+    $presentFn = Get-CppFunctionBody $Source 'interposer_vkQueuePresentKHR'
+    if ($null -eq $presentFn) { return $false }
 
-    $hasExportFiles = ($clean -match 'b2b_event499_current_rgba8\.raw') -and
-                      ($clean -match 'b2b_event500_previous_rgba8\.raw') -and
-                      ($clean -match 'b2b_event500_current_rgba8\.raw') -and
-                      ($clean -match 'b2b_event500_G_rgba8\.raw') -and
-                      ($clean -match 'b2b_readback_meta\.txt')
+    $b2bBlock = Get-CppBlock $presentFn 'else\s+if\s*\(\s*isB2bActive\s*\)'
+    if ($null -eq $b2bBlock) { return $false }
 
-    return ($hasReadbackBuffers -and $hasExportFiles)
+    # 1. Event E-1 Capture: captures C into b2bReadbackPrevCBuffer when event == targetEvent - 1
+    $hasE1Check = ($b2bBlock -match 'targetB2bEvent\s*-\s*1') -and
+                  ($b2bBlock -match 'cmdCopyImageToBuffer\s*\([^,]+,\s*slot\.capturedImage,\s*VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,\s*transport\.b2bReadbackPrevCBuffer')
+
+    # 2. Event E Capture: captures P, C, G into their respective staging buffers
+    $hasECheck = ($b2bBlock -match 'targetB2bEvent') -and
+                 ($b2bBlock -match 'cmdCopyImageToBuffer\s*\([^,]+,\s*transport\.b2bHistoryImage,\s*VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,\s*transport\.b2bReadbackPBuffer') -and
+                 ($b2bBlock -match 'cmdCopyImageToBuffer\s*\([^,]+,\s*slot\.capturedImage,\s*VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,\s*transport\.b2bReadbackCBuffer') -and
+                 ($b2bBlock -match 'cmdCopyImageToBuffer\s*\([^,]+,\s*slot\.generatedImage,\s*VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,\s*transport\.b2bReadbackGBuffer')
+
+    # 3. Fence-gated readback export in QueuePresent: must poll b2bReadbackPending and call exportB2BReadbackFiles
+    $hasFenceExport = ($presentFn -match 'transport\.b2bReadbackPending') -and
+                      ($presentFn -match 'exportB2BReadbackFiles\s*\(')
+
+    # 4. Metadata verification in exportB2BReadbackFiles: format must use runtime event parameters
+    $exportFn = Get-CppFunctionBody $Source 'exportB2BReadbackFiles'
+    $hasRuntimeMeta = ($exportFn -ne $null) -and
+                      ($exportFn -match 'targetEvent') -and
+                      ($exportFn -match 'prevEvent') -and
+                      ($exportFn -match 'slotPrev') -and
+                      ($exportFn -match 'slotCurrent')
+
+    return ($hasE1Check -and $hasECheck -and $hasFenceExport -and $hasRuntimeMeta)
 }
 
 function Test-SynchronizationAndNoHotPathBlocking {
@@ -180,16 +244,16 @@ if (Test-DedicatedHistoryResourceAndDescriptors $source) {
     $allPassed = $false
 }
 
-Write-Host "[Contract 4/6] First-Event Seed & History Update Strictly After Compute..." -NoNewline
-if (Test-FirstEventSeedAndHistorySequencing $source) {
+Write-Host "[Contract 4/6] B2B-Specific Dispatch & Strict History Update Ordering..." -NoNewline
+if (Test-B2BSpecificDispatchAndOrdering $source) {
     Write-Host " PASS" -ForegroundColor Green
 } else {
     Write-Host " FAIL" -ForegroundColor Red
     $allPassed = $false
 }
 
-Write-Host "[Contract 5/6] Non-Blocking 4-File Readback Proof (C499, P500, C500, G500)..." -NoNewline
-if (Test-B2BReadbackProofAndFourFileExport $source) {
+Write-Host "[Contract 5/6] Temporal E-1/E Capture & Fence-Gated 4-File Readback Export..." -NoNewline
+if (Test-TemporalReadbackCaptureAndFenceExport $source) {
     Write-Host " PASS" -ForegroundColor Green
 } else {
     Write-Host " FAIL" -ForegroundColor Red
