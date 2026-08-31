@@ -91,7 +91,11 @@ function Test-B2BGatesAndAtomics {
     $hasB2bMaxActive = ($clean -match 'g_b2bHistoryProofMaxActive') -and ($clean -match 'AMETHYST_LSFG_B2B_HISTORY_PROOF_MAX_ACTIVE')
     $hasB2bReadbackGate = ($clean -match 'g_b2bReadbackProof') -and ($clean -match 'AMETHYST_LSFG_B2B_READBACK_PROOF')
     $hasB2bReadbackEvent = ($clean -match 'g_b2bReadbackProofEvent') -and ($clean -match 'AMETHYST_LSFG_B2B_READBACK_PROOF_EVENT')
-    $hasCounters = ($clean -match 'g_b2bEligible') -and ($clean -match 'g_b2bSeed') -and ($clean -match 'g_b2bDispatch') -and ($clean -match 'g_b2bHistoryUpdate')
+    $hasCounters = ($clean -match 'g_b2bEligible') -and ($clean -match 'g_b2bSeed') -and
+                   ($clean -match 'g_b2bDispatch') -and ($clean -match 'g_b2bHistoryUpdate') -and
+                   ($clean -match 'g_b2bReadbackRequested') -and ($clean -match 'g_b2bReadbackRecorded') -and
+                   ($clean -match 'g_b2bReadbackCompleted') -and ($clean -match 'g_b2bReadbackWritten') -and
+                   ($clean -match 'g_b2bReadbackFailure')
     return ($hasB2bGate -and $hasB2bMaxActive -and $hasB2bReadbackGate -and $hasB2bReadbackEvent -and $hasCounters)
 }
 
@@ -187,17 +191,50 @@ function Test-TemporalReadbackCaptureAndFenceExport {
 
     # 3. Fence-gated readback export in QueuePresent: must poll b2bReadbackPending and call exportB2BReadbackFiles
     $hasFenceExport = ($presentFn -match 'transport\.b2bReadbackPending') -and
-                      ($presentFn -match 'exportB2BReadbackFiles\s*\(')
+                      ($presentFn -match 'exportB2BReadbackFiles\s*\(') -and
+                      ($presentFn -match 'g_b2bReadbackWritten\.fetch_add') -and
+                      ($presentFn -match 'g_b2bReadbackFailure\.fetch_add')
 
-    # 4. Metadata verification in exportB2BReadbackFiles: format must use runtime event parameters
+    # 4. exportB2BReadbackFiles: bool return, dynamic format filenames, and runtime metadata
     $exportFn = Get-CppFunctionBody $Source 'exportB2BReadbackFiles'
+    $hasDynamicFilenames = ($exportFn -ne $null) -and
+                           ($exportFn -match 'b2b_event%u_current_rgba8\.raw') -and
+                           ($exportFn -match 'b2b_event%u_previous_rgba8\.raw') -and
+                           ($exportFn -match 'b2b_event%u_G_rgba8\.raw')
     $hasRuntimeMeta = ($exportFn -ne $null) -and
                       ($exportFn -match 'targetEvent') -and
                       ($exportFn -match 'prevEvent') -and
                       ($exportFn -match 'slotPrev') -and
-                      ($exportFn -match 'slotCurrent')
+                      ($exportFn -match 'slotCurrent') -and
+                      ($exportFn -match 'committed_dispatch_counter')
 
-    return ($hasE1Check -and $hasECheck -and $hasFenceExport -and $hasRuntimeMeta)
+    return ($hasE1Check -and $hasECheck -and $hasFenceExport -and $hasDynamicFilenames -and $hasRuntimeMeta)
+}
+
+function Test-PostSubmitCommitSemantics {
+    param([string]$Source)
+    $presentFn = Get-CppFunctionBody $Source 'interposer_vkQueuePresentKHR'
+    if ($null -eq $presentFn) { return $false }
+
+    $b2bBlock = Get-CppBlock $presentFn 'else\s+if\s*\(\s*isB2bActive\s*\)'
+    if ($null -eq $b2bBlock) { return $false }
+
+    # Recording branch must NOT directly mutate persistent state/counters
+    $noSeedMutationInRecording = -not ($b2bBlock -match '\b(?<!commit)b2bHistoryValid\s*=\s*true')
+    $noDispatchIncrementInRecording = -not ($b2bBlock -match '\bg_b2bDispatch\.fetch_add')
+    $noPendingMutationInRecording = -not ($b2bBlock -match '\b(?<!commit)b2bReadbackPending\s*=\s*true')
+
+    # Post-submit success block (submitRes == VK_SUCCESS) must commit state and advance counters
+    $postSubmitBlock = Get-CppBlock $presentFn 'if\s*\(\s*submitRes\s*==\s*VK_SUCCESS\s*\)'
+    if ($null -eq $postSubmitBlock) { return $false }
+
+    $hasSeedCommit = ($postSubmitBlock -match 'commitB2bSeed') -and ($postSubmitBlock -match 'b2bHistoryValid\s*=\s*true') -and ($postSubmitBlock -match 'g_b2bSeed\.fetch_add')
+    $hasDispatchCommit = ($postSubmitBlock -match 'commitB2bDispatch') -and ($postSubmitBlock -match 'g_b2bDispatch\.fetch_add')
+    $hasHistUpdateCommit = ($postSubmitBlock -match 'commitB2bHistoryUpdate') -and ($postSubmitBlock -match 'g_b2bHistoryUpdate\.fetch_add')
+    $hasReadbackCommit = ($postSubmitBlock -match 'commitB2bReadbackPending') -and ($postSubmitBlock -match 'b2bReadbackPending\s*=\s*true') -and ($postSubmitBlock -match 'g_b2bReadbackRecorded\.fetch_add')
+
+    return ($noSeedMutationInRecording -and $noDispatchIncrementInRecording -and $noPendingMutationInRecording -and
+            $hasSeedCommit -and $hasDispatchCommit -and $hasHistUpdateCommit -and $hasReadbackCommit)
 }
 
 function Test-SynchronizationAndNoHotPathBlocking {
@@ -220,7 +257,7 @@ if (-not (Test-Path $ProducerSource)) {
 $source = Get-Content $ProducerSource -Raw
 $allPassed = $true
 
-Write-Host "[Contract 1/6] B2B Diagnostic Gates and Counters..." -NoNewline
+Write-Host "[Contract 1/7] B2B Diagnostic Gates and Counters..." -NoNewline
 if (Test-B2BGatesAndAtomics $source) {
     Write-Host " PASS" -ForegroundColor Green
 } else {
@@ -228,7 +265,7 @@ if (Test-B2BGatesAndAtomics $source) {
     $allPassed = $false
 }
 
-Write-Host "[Contract 2/6] B2B 32x32 Checkerboard Shader & SPIR-V Header..." -NoNewline
+Write-Host "[Contract 2/7] B2B 32x32 Checkerboard Shader & SPIR-V Header..." -NoNewline
 if (Test-B2BShaderAndSpirv $ShaderSource $SpirvHeader $B2aShaderSource $B2aSpirvHeader) {
     Write-Host " PASS" -ForegroundColor Green
 } else {
@@ -236,7 +273,7 @@ if (Test-B2BShaderAndSpirv $ShaderSource $SpirvHeader $B2aShaderSource $B2aSpirv
     $allPassed = $false
 }
 
-Write-Host "[Contract 3/6] Dedicated Swapchain-Scoped History Image (P) Resource..." -NoNewline
+Write-Host "[Contract 3/7] Dedicated Swapchain-Scoped History Image (P) Resource..." -NoNewline
 if (Test-DedicatedHistoryResourceAndDescriptors $source) {
     Write-Host " PASS" -ForegroundColor Green
 } else {
@@ -244,7 +281,7 @@ if (Test-DedicatedHistoryResourceAndDescriptors $source) {
     $allPassed = $false
 }
 
-Write-Host "[Contract 4/6] B2B-Specific Dispatch & Strict History Update Ordering..." -NoNewline
+Write-Host "[Contract 4/7] B2B-Specific Dispatch & Strict History Update Ordering..." -NoNewline
 if (Test-B2BSpecificDispatchAndOrdering $source) {
     Write-Host " PASS" -ForegroundColor Green
 } else {
@@ -252,7 +289,7 @@ if (Test-B2BSpecificDispatchAndOrdering $source) {
     $allPassed = $false
 }
 
-Write-Host "[Contract 5/6] Temporal E-1/E Capture & Fence-Gated 4-File Readback Export..." -NoNewline
+Write-Host "[Contract 5/7] Temporal E-1/E Capture & Fence-Gated 4-File Readback Export..." -NoNewline
 if (Test-TemporalReadbackCaptureAndFenceExport $source) {
     Write-Host " PASS" -ForegroundColor Green
 } else {
@@ -260,7 +297,15 @@ if (Test-TemporalReadbackCaptureAndFenceExport $source) {
     $allPassed = $false
 }
 
-Write-Host "[Contract 6/6] Vulkan GPU Synchronization & Zero Hot-Path Blocking..." -NoNewline
+Write-Host "[Contract 6/7] Post-Submit Commit Semantics (Zero Pre-Commit Mutation)..." -NoNewline
+if (Test-PostSubmitCommitSemantics $source) {
+    Write-Host " PASS" -ForegroundColor Green
+} else {
+    Write-Host " FAIL" -ForegroundColor Red
+    $allPassed = $false
+}
+
+Write-Host "[Contract 7/7] Vulkan GPU Synchronization & Zero Hot-Path Blocking..." -NoNewline
 if (Test-SynchronizationAndNoHotPathBlocking $source) {
     Write-Host " PASS" -ForegroundColor Green
 } else {
