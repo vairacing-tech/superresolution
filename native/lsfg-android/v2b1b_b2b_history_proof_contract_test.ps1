@@ -162,7 +162,7 @@ function Test-B2BSpecificDispatchAndOrdering {
     # 4. History Update C -> P (cmdCopyImage with slot.capturedImage -> transport.b2bHistoryImage)
     $idxCapture = $b2bBlock.IndexOf('slot.capturedImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL')
     $idxDispatch = $b2bBlock.IndexOf('transport.b2bComputePipeline')
-    $idxOutputG = $b2bBlock.IndexOf('transport.swapchainImages[M], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL')
+    $idxOutputG = if ($idxDispatch -ge 0) { $b2bBlock.IndexOf('slot.generatedImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL', $idxDispatch) } else { -1 }
     $idxUpdateP = if ($idxDispatch -ge 0) { $b2bBlock.IndexOf('transport.b2bHistoryImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL', $idxDispatch) } else { -1 }
 
     $orderingOk = ($idxCapture -ge 0) -and ($idxDispatch -gt $idxCapture) -and
