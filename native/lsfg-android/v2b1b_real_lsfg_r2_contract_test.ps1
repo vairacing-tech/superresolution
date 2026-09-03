@@ -160,7 +160,8 @@ Report-Contract "Contract L" $condL "Existing R1 API symbol preserved exactly, a
 # Contract M: Profiling-disabled LSFG graph remains unchanged
 # ------------------------------------------------------------------------------
 $disabledCheck = ($lsfgCppSource -match 'bool\s+profileActive\s*=\s*\(profiling\s*!=\s*nullptr\s*&&\s*profiling->enabled') -or
-                 ($lsfgCppSource -match 'if\s*\(\s*profileActive\s*\)')
+                 ($lsfgCppSource -match 'if\s*\(\s*profileActive\b') -or
+                 ($lsfgCppSource -match 'bool\s+active\s*=\s*\(profiling\s*!=\s*nullptr\s*&&\s*profiling->enabled')
 Report-Contract "Contract M" $disabledCheck "When profiling is disabled or null, zero timestamp commands are recorded."
 
 # ------------------------------------------------------------------------------
