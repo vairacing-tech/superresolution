@@ -56,6 +56,8 @@ Assert-Condition ($interposerContent -match "executedDispatches") "Summary repor
 Assert-Condition ($interposerContent -match "bypassedDispatches") "Summary reports bypassedDispatches"
 Assert-Condition ($interposerContent -match "deltaExecutedMean") "Summary reports deltaExecutedMean"
 Assert-Condition ($interposerContent -match "deltaBypassMarkerMean") "Summary reports deltaBypassMarkerMean"
+# Verify profiling pointer safety: r4aOptions.profiling assigned address-of &stageProfiling and NOT value copy
+Assert-Condition ($interposerContent -match "r4aOptions\.profiling\s*=\s*(timingActiveForSlot\s*\?\s*)?&stageProfiling" -and -not ($interposerContent -match "r4aOptions\.profiling\s*=\s*stageProfiling;")) "Profiling pointer uses valid address-of &stageProfiling and not value copy"
 
 # 4. Verify no proprietary shader modifications
 $repoDir = "C:\Proyectos\amethyst_worktree_real_lsfg_r4a"
