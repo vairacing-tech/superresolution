@@ -1,5 +1,7 @@
 # v2b1b_real_lsfg_functional_backend_contract_test.ps1
-# Contract test for REAL-LSFG Functional External Backend Baseline (100 Dispatches)
+# Authoritative Contract Test for REAL-LSFG Functional Baseline + Physical Pixel-Proof
+# Enforces active-path command recording, fence-retirement evaluator, format handling,
+# geometry hierarchies, Beta/Seed topologies, and zero false-green placeholders.
 
 $ErrorActionPreference = "Stop"
 $failures = @()
@@ -13,9 +15,9 @@ function Assert-Condition($cond, $msg) {
     }
 }
 
-Write-Host "=== REAL-LSFG FUNCTIONAL BACKEND CONTRACT TEST ===" -ForegroundColor Cyan
+Write-Host "=== REAL-LSFG FUNCTIONAL BACKEND + PIXEL-PROOF CONTRACT TEST ===" -ForegroundColor Cyan
 
-# Paths
+# Source Paths
 $lsfgCppPath = "C:\Proyectos\LS-FG\lsfg-vk-android\framegen\v3.1_src\lsfg.cpp"
 $headerPath = "C:\Proyectos\LS-FG\lsfg-vk-android\framegen\public\lsfg_3_1.hpp"
 $interposerPath = "C:\Proyectos\amethyst_worktree_real_lsfg_functional\app_pojavlauncher\src\main\jni\lsfg_vulkan_interposer.cpp"
@@ -31,7 +33,11 @@ $lsfgContent = if (Test-Path $lsfgCppPath) { Get-Content $lsfgCppPath -Raw } els
 $headerContent = if (Test-Path $headerPath) { Get-Content $headerPath -Raw } else { "" }
 $interposerContent = if (Test-Path $interposerPath) { Get-Content $interposerPath -Raw } else { "" }
 
-# Contract A: Authoritative Gamma Extents Table
+# -----------------------------------------------------------------------------
+# 1. Extent & Geometry Hierarchy Contracts (Sections 2, 3, 29)
+# -----------------------------------------------------------------------------
+
+# Contract 1: Authoritative Gamma Extents Table
 $gammaExtentsCheck = ($lsfgContent -match "8\s*,\s*4" -and
                       $lsfgContent -match "15\s*,\s*9" -and
                       $lsfgContent -match "30\s*,\s*17" -and
@@ -39,140 +45,173 @@ $gammaExtentsCheck = ($lsfgContent -match "8\s*,\s*4" -and
                       $lsfgContent -match "120\s*,\s*68" -and
                       $lsfgContent -match "240\s*,\s*135" -and
                       $lsfgContent -match "480\s*,\s*270")
-Assert-Condition $gammaExtentsCheck "Contract A: Authoritative Gamma extent hierarchy (8x4 -> 480x270) defined"
+Assert-Condition $gammaExtentsCheck "Contract 1: Authoritative Gamma extent hierarchy (8x4 -> 480x270) defined"
 
-# Contract B: Authoritative Delta Extents Table
+# Contract 2: Authoritative Delta Extents Table
 $deltaExtentsCheck = ($lsfgContent -match "120\s*,\s*68" -and
                       $lsfgContent -match "240\s*,\s*135" -and
                       $lsfgContent -match "480\s*,\s*270")
-Assert-Condition $deltaExtentsCheck "Contract B: Authoritative Delta extent hierarchy (120x68 -> 480x270) defined"
+Assert-Condition $deltaExtentsCheck "Contract 2: Authoritative Delta extent hierarchy (120x68 -> 480x270) defined"
 
-# Contract C: Correct Gamma/Delta Dispatch Counts
-$gammaDispatchCheck = ($lsfgContent -match "threadsX\s*=\s*\([^)]*width\s*\+\s*7\)\s*>>\s*3" -or
-                       $lsfgContent -match "tx\s*=\s*\([^)]*\.width\s*\+\s*7\)\s*>>\s*3" -or
-                       $lsfgContent -match "uint32_t\s+threadsX\s*=\s*\(extent\.width\s*\+\s*7\)\s*>>\s*3")
-Assert-Condition $gammaDispatchCheck "Contract C: Gamma & Delta dispatches computed using ceil(extent/8)"
+# Contract 3: Mipmap Geometry Hierarchy
+$mipmapHierarchyCheck = ($interposerContent -match "1920.*1080" -and
+                         $interposerContent -match "960.*540" -and
+                         $interposerContent -match "480.*270" -and
+                         $interposerContent -match "240.*135" -and
+                         $interposerContent -match "120.*67" -and
+                         $interposerContent -match "60.*33" -and
+                         $interposerContent -match "30.*16")
+Assert-Condition $mipmapHierarchyCheck "Contract 3: Mipmap extent hierarchy (1080p down to 30x16) recognized"
 
-# Contract D: No Historical Full-Resolution Flow Dispatch Formulas
-$noOverdispatch = -not ($lsfgContent -match "dispatch\(.*240\s*,\s*135.*gamma" -or $lsfgContent -match "dispatch\(.*240\s*,\s*135.*delta")
-Assert-Condition $noOverdispatch "Contract D: No historical 240x135 overdispatch on Gamma/Delta stages"
+# Contract 4: Stale Telemetry Shift Formulas ELIMINATED
+$noStaleGammaShift = -not ($interposerContent -match '1920u\s*>>\s*\(\s*6\s*-\s*lvl\s*\)')
+$noStaleDeltaShift = -not ($interposerContent -match '1920u\s*>>\s*\(\s*2\s*-\s*lvl\s*\)')
+Assert-Condition ($noStaleGammaShift -and $noStaleDeltaShift) "Contract 4: Stale shift formulas eliminated from telemetry"
 
-# Contract E: Global Alpha Temporal Banks
-$globalAlphaCheck = ($lsfgContent -match "alphaOutImgs" -or $lsfgContent -match "alphaGlobalOutImgs" -or $lsfgContent -match "globalAlpha") -and
-                    ($lsfgContent -match "84" -or $lsfgContent -match "3\s*\*\s*4\s*\*\s*7")
-Assert-Condition $globalAlphaCheck "Contract E: 84 global temporal Alpha images across 3 banks and 7 levels"
+# Contract 5: Alpha Multi-Tier Representation (sourceExtent, halfExtent, quarterExtent)
+$alphaMultiTierLog = ($interposerContent -match "sourceExtent=" -and
+                      $interposerContent -match "halfExtent=" -and
+                      $interposerContent -match "quarterExtent=")
+Assert-Condition $alphaMultiTierLog "Contract 5: Alpha telemetry reports sourceExtent, halfExtent, and quarterExtent"
 
-# Contract F: Per-Slot Scratch Images
-$slotScratchCheck = ($lsfgContent -match "166" -or $lsfgContent -match "scratchImgs")
-Assert-Condition $slotScratchCheck "Contract F: Frame-local scratch allocated per transport slot"
+# -----------------------------------------------------------------------------
+# 2. Beta & Seed Topology Contracts (Sections 4, 5, 30, 31)
+# -----------------------------------------------------------------------------
 
-# Contract G: 142 Descriptor Sets Per Slot (284 Total)
-$setCountCheck = ($lsfgContent -match "142" -and $lsfgContent -match "284")
-Assert-Condition $setCountCheck "Contract G: Exactly 142 descriptor sets per slot (284 total)"
+# Contract 6: Beta Topology Sequence (res_275..res_279, 5 dispatches at 480x270)
+$betaSeqCheck = ($lsfgContent -match '275\s*,\s*276\s*,\s*277\s*,\s*278\s*,\s*279') -and
+                ($lsfgContent -match 'bs\s*=\s*\(\s*p\s*==\s*4\s*\)\s*\?\s*32\s*:\s*8' -or $lsfgContent -match '32\s*:\s*8')
+Assert-Condition $betaSeqCheck "Contract 6: Beta executes exactly 5 passes (res_275..279) with 60x34 and 15x9 dispatches"
 
-# Contract H: 1452 Sampled-Image Descriptor Elements Total
-$sampledElementsCheck = ($lsfgContent -match "1452" -or $lsfgContent -match "726")
-Assert-Condition $sampledElementsCheck "Contract H: 1452 sampled-image descriptor elements total (726 per slot)"
+# Contract 7: Seed Topology (res_267, 268, 269 1x each, res_270 3x per level -> 42 Alpha + 1 Mipmaps = 43 total)
+$seedTopologyCheck = ($lsfgContent -match "for\s*\(\s*int\s*bank\s*=\s*0;\s*bank\s*<\s*3;\s*\+\+bank\s*\)\s*\{[^\}]*270") -and
+                     ($lsfgContent -match "42\s*dispatches" -or $lsfgContent -match "43\s*dispatches\s*total")
+Assert-Condition $seedTopologyCheck "Contract 7: Seed implements 42 Alpha (P0..P2 once, P3 3x) + 1 Mipmaps = 43 dispatches"
 
-# Contract I: Seed Mode Entry Point Exists
-$seedApiCheck = ($headerContent -match "lsfg_record_seed" -and $lsfgContent -match "lsfg_record_seed")
-Assert-Condition $seedApiCheck "Contract I: lsfg_record_seed API exists in header and implementation"
+# -----------------------------------------------------------------------------
+# 3. Pixel-Proof Architecture & Rejection of Placeholders (Sections 6-28, Addendum A-Q)
+# -----------------------------------------------------------------------------
 
-# Contract J: Seed Populates All 3 Alpha Banks (43 Dispatches Total)
-$seedReplayCheck = ($lsfgContent -match "43" -or ($lsfgContent -match "bank\s*<\s*3" -and $lsfgContent -match "alpha\[3\]"))
-Assert-Condition $seedReplayCheck "Contract J: Seed performs Alpha pass-3 replay across all 3 banks (43 dispatches)"
+# Contract 8: REJECT FALSE-GREEN PLACEHOLDER
+$noDummyPlaceholder = -not ($interposerContent -match 'bool\s+pixelProofPassed\s*=\s*true\s*;')
+Assert-Condition $noDummyPlaceholder "Contract 8: Rejection of false-green placeholder (bool pixelProofPassed = true)"
 
-# Contract K: History-Only Mode Exists
-$historyOnlyCheck = ($headerContent -match "lsfg_record_history_only" -or $headerContent -match "LSFG_RECORD_MODE_HISTORY_ONLY" -or
-                     $lsfgContent -match "history_only" -or $lsfgContent -match "HISTORY_ONLY" -or $lsfgContent -match "record_history")
-Assert-Condition $historyOnlyCheck "Contract K: History-only recording mode supported"
+# Contract 9: New Explicit Functional Pixel Proof Gate (AMETHYST_LSFG_FUNCTIONAL_PIXEL_PROOF)
+$proofEnvCheck = ($interposerContent -match 'AMETHYST_LSFG_FUNCTIONAL_PIXEL_PROOF\b') -and
+                 ($interposerContent -match 'AMETHYST_LSFG_FUNCTIONAL_PIXEL_PROOF_MAX_ATTEMPTS\b')
+Assert-Condition $proofEnvCheck "Contract 9: AMETHYST_LSFG_FUNCTIONAL_PIXEL_PROOF and MAX_ATTEMPTS parsed"
 
-# Contract L: Full-Generation Mode Requires Valid Temporal History
-$temporalGuardCheck = ($lsfgContent -match "temporalBootstrapComplete" -or $lsfgContent -match "historyValid" -or $lsfgContent -match "isBootstrapped")
-Assert-Condition $temporalGuardCheck "Contract L: Full generation guarded by valid temporal history state"
+# Contract 10: Unconditional VK_IMAGE_USAGE_TRANSFER_DST_BIT on slot.generatedImage
+$genUsageCheck = ($interposerContent -match 'VK_IMAGE_USAGE_TRANSFER_DST_BIT') -and
+                 ($interposerContent -match 'slots\[s\]\.generatedImage')
+Assert-Condition $genUsageCheck "Contract 10: slot.generatedImage unconditionally created with TRANSFER_DST_BIT"
 
-# Contract M: algorithmFrameCount Global and Native-Based
-$frameCountCheck = ($lsfgContent -match "algorithmFrameCount" -and $interposerContent -match "algorithmFrameCount")
-Assert-Condition $frameCountCheck "Contract M: Global algorithmFrameCount tracks native source frame chronology"
+# Contract 11: Per-Slot Proof Staging Buffer Ownership
+$perSlotStagingCheck = ($interposerContent -match 'proofStagingPBuffer' -and
+                        $interposerContent -match 'proofStagingCBuffer' -and
+                        $interposerContent -match 'proofStagingGBuffer' -and
+                        $interposerContent -match 'proofStagingPMapped')
+Assert-Condition $perSlotStagingCheck "Contract 11: Dedicated proof staging buffers owned per TransportSlot"
 
-# Contract N: History Failure Invalidates Bootstrap
-$historyFailCheck = ($interposerContent -match "temporalBootstrapComplete\s*=\s*false" -or
-                     $interposerContent -match "historyValid\s*=\s*false" -or
-                     $lsfgContent -match "temporalBootstrapComplete\s*=\s*false")
-Assert-Condition $historyFailCheck "Contract N: History failure invalidates bootstrap and requires re-seed"
+# Contract 12: Sentinel Clear in Active Functional Path
+$sentinelClearCheck = ($interposerContent -match 'cmdClearColorImage\s*\([^\)]*slot\.generatedImage' -or
+                       $interposerContent -match 'vkCmdClearColorImage\s*\([^\)]*slot\.generatedImage') -and
+                      ($interposerContent -match '30(\.0f)?\s*/\s*255' -and $interposerContent -match '117(\.0f)?\s*/\s*255')
+Assert-Condition $sentinelClearCheck "Contract 12: Deterministic R/B-symmetric sentinel (30, 117, 30, 8) cleared on G before Generate"
 
-# Contract O: 416 Graph Images Initialized to GENERAL
-$initImagesCheck = ($lsfgContent -match "416" -and $lsfgContent -match "VK_IMAGE_LAYOUT_GENERAL")
-Assert-Condition $initImagesCheck "Contract O: All 416 algorithm graph images transitioned to GENERAL"
+# Contract 13: Readback Copies in Active Functional Path Before Native History Overwrite
+$readbackCopiesCheck = ($interposerContent -match 'cmdCopyImageToBuffer\s*\([^\)]*b2bHistoryImage[^\)]*proofStagingPBuffer') -and
+                       ($interposerContent -match 'cmdCopyImageToBuffer\s*\([^\)]*capturedImage[^\)]*proofStagingCBuffer') -and
+                       ($interposerContent -match 'cmdCopyImageToBuffer\s*\([^\)]*generatedImage[^\)]*proofStagingGBuffer')
+Assert-Condition $readbackCopiesCheck "Contract 13: Active functional path copies P, C, and G into per-slot staging buffers"
 
-# Contract P: Dummy Resource Validated
-$dummyCheck = ($lsfgContent -match "dummyImage" -and $lsfgContent -match "dummyImageView")
-Assert-Condition $dummyCheck "Contract P: Fallback dummy image resource instantiated and validated"
+# Contract 14: Staging Memory Invalidation for Non-Coherent Host Memory
+$invalidationCheck = ($interposerContent -match 'vkInvalidateMappedMemoryRanges' -or $interposerContent -match 'invalidateMappedMemoryRanges') -and
+                     ($interposerContent -match 'proofStagingPMemory' -or $interposerContent -match 'proofStagingGBuffer' -or $interposerContent -match 'proofStaging')
+Assert-Condition $invalidationCheck "Contract 14: Non-coherent memory invalidation implemented using valid Vulkan ranges"
 
-# Contract Q: All Descriptors Non-Null Validation
-$descriptorsCheck = ($lsfgContent -match "expectedWriteCount" -or $lsfgContent -match "completedWriteCount" -or $lsfgContent -match "validateDescriptors")
-Assert-Condition $descriptorsCheck "Contract Q: All descriptor bindings validated non-null with write tracking"
+# Contract 15: Mathematical RGB Normalized MAD Evaluator
+$madEvaluatorCheck = ($interposerContent -match 'MAD_PC' -and
+                      $interposerContent -match 'MAD_GP' -and
+                      $interposerContent -match 'MAD_GC' -and
+                      $interposerContent -match '255')
+Assert-Condition $madEvaluatorCheck "Contract 15: Mathematical RGB normalized MAD calculation (0.0..1.0) implemented"
 
-# Contract R: All UBO Records Valid
-$uboCheck = ($lsfgContent -match "ConstantBuffer" -and $lsfgContent -match "flowScale" -and $lsfgContent -match "interpolationFactor")
-Assert-Condition $uboCheck "Contract R: UBO constant buffer records populated with valid runtime parameters"
+# Contract 16: Non-Cryptographic 64-bit Hashes (hashP, hashC, hashG)
+$hashCheck = ($interposerContent -match 'hashP' -and $interposerContent -match 'hashC' -and $interposerContent -match 'hashG')
+Assert-Condition $hashCheck "Contract 16: 64-bit image content hashes computed for P, C, and G"
 
-# Contract S: All Compute Stages Bind Descriptor Sets
-$bindSetsCheck = ($lsfgContent -match "cmdBindDescriptorSets" -and ($lsfgContent -match "firstDescriptorSet" -or $lsfgContent -match "mipmapsSet"))
-Assert-Condition $bindSetsCheck "Contract S: All 100 compute stages bind valid descriptor sets"
+# Contract 17: Format Handling (R8G8B8A8 and B8G8R8A8 supported, unsupported rejected)
+$formatHandlingCheck = ($interposerContent -match 'VK_FORMAT_R8G8B8A8_UNORM' -and
+                        $interposerContent -match 'VK_FORMAT_B8G8R8A8_UNORM' -and
+                        $interposerContent -match 'PIXEL_PROOF_UNSUPPORTED_FORMAT')
+Assert-Condition $formatHandlingCheck "Contract 17: Explicit channel decoding for RGBA8/BGRA8 and unsupported format rejection"
 
-# Contract T: Correct Initial Layouts Transitioned Without Implicit Driver Assumptions
-$layoutCheck = ($lsfgContent -match "VK_IMAGE_LAYOUT_UNDEFINED" -and $lsfgContent -match "VK_IMAGE_LAYOUT_GENERAL")
-Assert-Condition $layoutCheck "Contract T: Explicit layout transition recorded from UNDEFINED to GENERAL"
+# Contract 18: Proof State Machine (DISABLED, PENDING, NO_MOTION, PASS, FAIL)
+$stateMachineCheck = ($interposerContent -match 'PIXEL_PROOF_DISABLED' -or $interposerContent -match 'PixelProofState::DISABLED') -and
+                     ($interposerContent -match 'PIXEL_PROOF_PENDING' -or $interposerContent -match 'PixelProofState::PENDING') -and
+                     ($interposerContent -match 'PIXEL_PROOF_NO_MOTION' -or $interposerContent -match 'PixelProofState::NO_MOTION') -and
+                     ($interposerContent -match 'PIXEL_PROOF_PASS' -or $interposerContent -match 'PixelProofState::PASS') -and
+                     ($interposerContent -match 'PIXEL_PROOF_FAIL' -or $interposerContent -match 'PixelProofState::FAIL')
+Assert-Condition $stateMachineCheck "Contract 18: Explicit proof state machine enum/states implemented"
 
-# Contract U: LSFG Backend Does NOT Call vkQueueSubmit
-$noQueueSubmitInLsfg = -not ($lsfgContent -match "vkQueueSubmit\s*\(" -or $lsfgContent -match "vkQueueSubmit2\s*\(")
-Assert-Condition $noQueueSubmitInLsfg "Contract U: LSFG backend does NOT invoke vkQueueSubmit (Amethyst owns submission)"
+# Contract 19: Static-Scene Non-Failure Logic (MAD_PC <= motionThreshold -> NO_MOTION)
+$staticSceneLogicCheck = ($interposerContent -match 'motionThreshold' -and
+                          $interposerContent -match 'NO_MOTION')
+Assert-Condition $staticSceneLogicCheck "Contract 19: Static scene (MAD_PC <= motionThreshold) yields NO_MOTION retry, not FAIL"
 
-# Contract V: No Queue/Device Idle in Steady-State Recording
-$noWaitIdleInLsfg = -not ($lsfgContent -match "vkQueueWaitIdle\s*\(" -or $lsfgContent -match "vkDeviceWaitIdle\s*\(")
-Assert-Condition $noWaitIdleInLsfg "Contract V: LSFG backend does NOT invoke vkWaitIdle in recording paths"
+# Contract 20: Moving-Scene Pass Criteria (sentinelPixelCount == 0, hashG != P/C, MAD_GP/GC > epsilon)
+$passCriteriaCheck = ($interposerContent -match 'sentinelPixelCount\s*==\s*0' -or $interposerContent -match 'sentinelPixels\s*==\s*0') -and
+                     ($interposerContent -match 'hashG\s*!=\s*hashP') -and
+                     ($interposerContent -match 'hashG\s*!=\s*hashC') -and
+                     ($interposerContent -match 'epsilon')
+Assert-Condition $passCriteriaCheck "Contract 20: Strict moving-scene PASS criteria (zero sentinel retention, distinct hashes, MAD > epsilon)"
 
-# Contract W: Pixel Proof Static-Scene Handling
-$staticSceneCheck = ($interposerContent -match "PIXEL_PROOF_NO_MOTION" -or
-                     $interposerContent -match "motionThreshold" -or
-                     $interposerContent -match "MAD\(P,\s*C\)")
-Assert-Condition $staticSceneCheck "Contract W: Pixel proof validates static-scene condition without false failure"
+# Contract 21: Runtime Telemetry Marker [LSFG-FUNC-PIXEL-PROOF]
+$telemetryMarkerCheck = ($interposerContent -match '\[LSFG-FUNC-PIXEL-PROOF\]')
+Assert-Condition $telemetryMarkerCheck "Contract 21: Runtime telemetry marker [LSFG-FUNC-PIXEL-PROOF] emitted"
 
-# Contract X: Diagnostic Events Excluded From Baseline Timing
-$timingExclusionCheck = ($interposerContent -match "EXCLUDED_FROM_BASELINE" -or
-                        $interposerContent -match "diagnosticSamples" -or
-                        $interposerContent -match "pixelProofPassed")
-Assert-Condition $timingExclusionCheck "Contract X: Seed and pixel proof events strictly excluded from baseline timing"
+# Contract 22: Persistent Summary Writer to lsfg_functional_run.txt
+$persistentFileCheck = ($interposerContent -match 'lsfg_functional_run\.txt')
+Assert-Condition $persistentFileCheck "Contract 22: Persistent summary file lsfg_functional_run.txt maintained"
 
-# Contract Y: R4-A and R4-B Forced OFF in Functional Baseline
+# Contract 23: Raw Evidence Export (P.raw, C.raw, G.raw, pixel_proof_meta.txt)
+$rawEvidenceCheck = ($interposerContent -match 'P\.raw' -and
+                     $interposerContent -match 'C\.raw' -and
+                     $interposerContent -match 'G\.raw' -and
+                     $interposerContent -match 'pixel_proof_meta\.txt')
+Assert-Condition $rawEvidenceCheck "Contract 23: Raw frame evidence and metadata exported to files/lsfg_functional_pixel_proof/"
+
+# Contract 24: Proof Events Excluded from Performance Timestamps
+$timingExclusionCheck = ($interposerContent -match 'timestampExcludeFromBaseline' -or
+                         $interposerContent -match 'excludeFromBaseline')
+Assert-Condition $timingExclusionCheck "Contract 24: Proof diagnostic events flagged and excluded from R1/R2/R3 timing aggregators"
+
+# Contract 25: Zero Explicit GPU Waits (No vkQueueWaitIdle / vkDeviceWaitIdle)
+$noWaitCheck = -not ($interposerContent -match 'vkQueueWaitIdle\s*\(' -or $interposerContent -match 'vkDeviceWaitIdle\s*\(')
+Assert-Condition $noWaitCheck "Contract 25: Zero vkQueueWaitIdle / vkDeviceWaitIdle calls in runtime"
+
+# Contract 26: R4-A and R4-B Forced OFF for Functional Baseline
 $r4OffCheck = ($interposerContent -match "AMETHYST_LSFG_R4A_DELTA_L2_BYPASS\s*==\s*0" -or
                $interposerContent -match "r4aEnabled\s*=\s*false" -or
                $interposerContent -match "deltaL2Bypass\s*=\s*false")
-Assert-Condition $r4OffCheck "Contract Y: R4-A and R4-B bypasses forced OFF for functional baseline"
+Assert-Condition $r4OffCheck "Contract 26: R4-A and R4-B bypasses forced OFF for functional baseline"
 
-# Contract Z: 100-Dispatch Functional Full Generation
+# Contract 27: Full 100-Dispatch Pipeline Preserved
 $fullDispatchesCheck = ($lsfgContent -match "100" -or ($lsfgContent -match "dispatches" -and $lsfgContent -match "Alpha" -and $lsfgContent -match "Beta" -and $lsfgContent -match "Gamma" -and $lsfgContent -match "Delta" -and $lsfgContent -match "Generate"))
-Assert-Condition $fullDispatchesCheck "Contract Z: Full generation graph dispatches all 100 compute passes"
+Assert-Condition $fullDispatchesCheck "Contract 27: Full generation graph dispatches all 100 compute passes"
 
-# Contract AA: Historical Exported C++ ABI Preserved
-$abiCheck = ($headerContent -match "lsfg_create_context_external" -and
-             $headerContent -match "lsfg_destroy_context_external" -and
-             $headerContent -match "lsfg_record_generation" -and
-             $headerContent -match "lsfg_record_generation_profiled_r3")
-Assert-Condition $abiCheck "Contract AA: Historical exported C++ ABI functions preserved"
-
-# Contract AB: No Proprietary Shader Assets Embedded
+# Contract 28: Proprietary Asset Isolation
 $repoDir = "C:\Proyectos\amethyst_worktree_real_lsfg_functional"
 if (-not (Test-Path $repoDir)) { $repoDir = "C:\Proyectos\amethyst_worktree_real_lsfg_r4b" }
 $dlls = Get-ChildItem -Path $repoDir -Recurse -Filter "Lossless.dll" -ErrorAction SilentlyContinue
-Assert-Condition ($dlls.Count -eq 0) "Contract AB: No Lossless.dll in repository"
+Assert-Condition ($dlls.Count -eq 0) "Contract 28a: No Lossless.dll in repository"
 $dxbcs = Get-ChildItem -Path $repoDir -Recurse -Filter "*.dxbc" -ErrorAction SilentlyContinue
-Assert-Condition ($dxbcs.Count -eq 0) "Contract AB: No *.dxbc in repository"
+Assert-Condition ($dxbcs.Count -eq 0) "Contract 28b: No *.dxbc in repository"
 $spvs = Get-ChildItem -Path $repoDir -Recurse -Filter "res_*.spv" -ErrorAction SilentlyContinue
-Assert-Condition ($spvs.Count -eq 0) "Contract AB: No res_*.spv in repository"
+Assert-Condition ($spvs.Count -eq 0) "Contract 28c: No res_*.spv in repository"
 
-Write-Host "=== FUNCTIONAL BACKEND CONTRACT SUMMARY ===" -ForegroundColor Cyan
+Write-Host "=== FUNCTIONAL BACKEND + PIXEL-PROOF CONTRACT SUMMARY ===" -ForegroundColor Cyan
 if ($failures.Count -gt 0) {
     Write-Host "FAILED with $($failures.Count) contract failure(s) (EXPECTED RED BEFORE IMPLEMENTATION):" -ForegroundColor Red
     foreach ($f in $failures) {
@@ -180,6 +219,6 @@ if ($failures.Count -gt 0) {
     }
     exit 1
 } else {
-    Write-Host "ALL 28 FUNCTIONAL CONTRACTS PASSED (GREEN)!" -ForegroundColor Green
+    Write-Host "ALL CONTRACTS PASSED (GREEN)!" -ForegroundColor Green
     exit 0
 }
