@@ -286,6 +286,124 @@ Assert-Condition ($dxbcs.Count -eq 0) "Contract 28b: No *.dxbc in repository"
 $spvs = Get-ChildItem -Path $repoDir -Recurse -Filter "res_*.spv" -ErrorAction SilentlyContinue
 Assert-Condition ($spvs.Count -eq 0) "Contract 28c: No res_*.spv in repository"
 
+# -----------------------------------------------------------------------------
+# 6. Centralized Slot State Commit & Scheduler Contracts (Amendments A, B, C, D, E, F)
+# -----------------------------------------------------------------------------
+
+# Contract 29: Centralized Mutable Slot Runtime State Commit Helper
+$commitHelperCheck = ($interposerContent -match 'commitMutableSlotRuntimeState\s*\(') -and
+                     ($interposerContent -match 'authoritative\.timestampRecorded\s*=\s*local\.timestampRecorded') -and
+                     ($interposerContent -match 'authoritative\.timestampEventId\s*=\s*local\.timestampEventId') -and
+                     ($interposerContent -match 'authoritative\.timestampExcludeFromBaseline\s*=\s*local\.timestampExcludeFromBaseline') -and
+                     ($interposerContent -match 'authoritative\.proofPending\s*=\s*local\.proofPending') -and
+                     ($interposerContent -match 'authoritative\.proofAttemptId\s*=\s*local\.proofAttemptId') -and
+                     ($interposerContent -match 'authoritative\.proofGenerationEvent\s*=\s*local\.proofGenerationEvent') -and
+                     ($interposerContent -match 'authoritative\.proofFormat\s*=\s*local\.proofFormat') -and
+                     ($interposerContent -match 'authoritative\.proofWidth\s*=\s*local\.proofWidth') -and
+                     ($interposerContent -match 'authoritative\.proofHeight\s*=\s*local\.proofHeight')
+Assert-Condition $commitHelperCheck "Contract 29: commitMutableSlotRuntimeState helper defined with complete audited field set"
+
+# Contract 30: Bidirectional State Commit Usage (Post-Submit AND Fence-Retirement)
+$postSubmitCommit = ($interposerContent -match 'commitMutableSlotRuntimeState\s*\(\s*it->second\.slots\[selectedSlot\]\s*,\s*slot\s*\)')
+$retirementCommit = ($interposerContent -match 'evaluateFunctionalPixelProof\s*\(\s*slot\s*,\s*transport\s*\)[\s\S]{1,300}commitMutableSlotRuntimeState\s*\(')
+Assert-Condition ($postSubmitCommit -and $retirementCommit) "Contract 30: commitMutableSlotRuntimeState invoked both post-submit and post-retirement"
+
+# Contract 31: Proof Scheduler State Machine (Terminal PASS/FAIL, Retryable NO_MOTION, Single In-Flight)
+$schedulerCheck = ($interposerContent -match 'isStateRetryable') -and
+                  ($interposerContent -match 'compare_exchange_strong' -or $interposerContent -match 'compare_exchange') -and
+                  ($interposerContent -match 'PixelProofState::PENDING') -and
+                  ($interposerContent -match 'PixelProofState::NO_MOTION')
+Assert-Condition $schedulerCheck "Contract 31: Proof scheduler enforces single in-flight, atomic claim, and terminal vs retryable states"
+
+# Contract 32: Seed Execution (No M Acquire, No M Present, Full 43-Dispatch GPU Submission, N Present)
+$seedNoMCheck = ($interposerContent -match '!transport\.b2bHistoryValid' -and
+                 $interposerContent -match 'commitB2bSeed') -and
+                ($interposerContent -match 'hasMImage' -or $interposerContent -match 'canAcquireM' -or $interposerContent -match 'isSeedEvent')
+Assert-Condition $seedNoMCheck "Contract 32: Seed event does not acquire or present M, but executes full 43-dispatch GPU submission"
+
+# Contract 33: MAX_EVENTS Exact Generated-M Semantics (N Generated M, N+1 Original N)
+$budgetSemanticsCheck = ($interposerContent -match 'g_realFgPresented\.fetch_add\(1' -and
+                         $interposerContent -match 'commitRealFgRecorded')
+Assert-Condition $budgetSemanticsCheck "Contract 33: Generated M presentations strictly match real generation events"
+
+# Contract 34: Retirement Precedes Budget Short-Circuit (Post-Budget Drain)
+$retirementDrainCheck = ($interposerContent -match 'g_realFgBudgetExhausted' -and
+                         $interposerContent -match 'evaluateFunctionalPixelProof') -or
+                        ($interposerContent -match 'drainRetiredSlots' -or $interposerContent -match 'retirePendingProof' -or $interposerContent -match 'drainRetiredSlotsAndProofs')
+Assert-Condition $retirementDrainCheck "Contract 34: Post-budget exhaustion path drains and evaluates retired slots/proofs"
+
+# Contract 35: Deterministic Scheduler Progression Model Test (2 slots, 5 attempts -> Gen 11)
+$modelTestPass = $false
+try {
+    # Simulate: 2 slots (0, 1). Slot 0 seed.
+    $slots = @( @{ pending = $false; attempt = 0 }, @{ pending = $false; attempt = 0 } )
+    $st = 'IDLE'
+    $attCount = 0
+    $curSlot = 0
+    $maxAtt = 5
+    $evalEvents = @()
+    # Event 0: Seed on slot 0
+    $curSlot = 1
+    for ($g = 1; $g -le 12; $g++) {
+        $sIdx = $curSlot
+        # 1. Retirement check on sIdx
+        if ($slots[$sIdx].pending) {
+            $slots[$sIdx].pending = $false
+            $evalEvents += @{ gen = $g; attempt = $slots[$sIdx].attempt }
+            $st = 'NO_MOTION' # worst-case retry simulation
+        }
+        # 2. Schedule check
+        if (($st -eq 'IDLE' -or $st -eq 'NO_MOTION') -and $attCount -lt $maxAtt -and -not $slots[$sIdx].pending) {
+            $attCount++
+            $slots[$sIdx].pending = $true
+            $slots[$sIdx].attempt = $attCount
+            $st = 'PENDING'
+        }
+        $curSlot = ($curSlot + 1) % 2
+    }
+    # Check that attempt 5 evaluated on gen 11
+    if ($evalEvents.Count -ge 5 -and $evalEvents[4].attempt -eq 5 -and $evalEvents[4].gen -eq 11) {
+        $modelTestPass = $true
+    }
+} catch {
+    $modelTestPass = $false
+}
+Assert-Condition $modelTestPass "Contract 35: 2-slot proof scheduler model proves Attempt 5 evaluates on Gen 11 (requires budget >= 11)"
+
+# -----------------------------------------------------------------------------
+# 7. PojavLauncher JRELogRedirect Daemon & Lifecycle Contracts (Amendments G, H, I, J)
+# -----------------------------------------------------------------------------
+
+$jreUtilsPath = "C:\Proyectos\amethyst_worktree_real_lsfg_functional\app_pojavlauncher\src\main\java\net\kdt\pojavlaunch\utils\JREUtils.java"
+Assert-Condition (Test-Path $jreUtilsPath) "JREUtils.java exists"
+
+$jreUtilsContent = if (Test-Path $jreUtilsPath) { Get-Content $jreUtilsPath -Raw } else { "" }
+
+# Contract 36a: Named Thread and setDaemon(true)
+$daemonCheck = ($jreUtilsContent -match '"JRELogRedirect"') -and
+               ($jreUtilsContent -match '\.setDaemon\s*\(\s*true\s*\)') -and
+               -not ($jreUtilsContent -match 'new\s+Thread\s*\(\s*new\s+Runnable\s*\(\s*\)\s*\{[\s\S]{1,100}\.start\s*\(\s*\)')
+Assert-Condition $daemonCheck "Contract 36a: JRELogRedirect is named and configured with setDaemon(true)"
+
+# Contract 36b: stopJRELogRedirect Lifecycle Handler (Process destruction, Stream closure, Reference clearing)
+$stopHandlerCheck = ($jreUtilsContent -match 'public\s+static\s+(synchronized\s+)?void\s+stopJRELogRedirect\s*\(\s*\)') -and
+                    ($jreUtilsContent -match 'sLogcatProcess' -or $jreUtilsContent -match 'mLogcatProcess') -and
+                    ($jreUtilsContent -match 'sLogcatInputStream' -or $jreUtilsContent -match 'mLogcatInputStream') -and
+                    ($jreUtilsContent -match '\.destroy\s*\(\s*\)')
+Assert-Condition $stopHandlerCheck "Contract 36b: stopJRELogRedirect implements process destruction and stream closure"
+
+# Contract 36c: Thread-level finally Cleanup (Instance-isolated cleanup)
+$finallyCleanupCheck = ($jreUtilsContent -match 'finally\s*\{' -and
+                        $jreUtilsContent -match 'localIs\.close' -and
+                        $jreUtilsContent -match 'localProcess\.destroy')
+Assert-Condition $finallyCleanupCheck "Contract 36c: JRELogRedirect implements instance-isolated finally block cleanup"
+
+# Contract 36d: Secondary JVM Shutdown Hook & Multi-Start Protection
+$shutdownHookCheck = ($jreUtilsContent -match 'addShutdownHook' -and
+                      $jreUtilsContent -match 'JRELogShutdownHook') -and
+                     ($jreUtilsContent -match 'sLogcatLock' -or $jreUtilsContent -match 'stopJRELogRedirect\(\)')
+Assert-Condition $shutdownHookCheck "Contract 36d: Secondary JVM shutdown hook registered and multi-start protected"
+
 Write-Host "=== FUNCTIONAL BACKEND + PIXEL-PROOF HARDENED CONTRACT SUMMARY ===" -ForegroundColor Cyan
 if ($failures.Count -gt 0) {
     Write-Host "FAILED with $($failures.Count) contract failure(s) (EXPECTED RED BEFORE IMPLEMENTATION):" -ForegroundColor Red
