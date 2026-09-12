@@ -448,6 +448,47 @@ $globalRefLifetimeSafe = ($awtBridgeContent -match 'NewGlobalRef') -and
 $callbacksCheck = $c1Check -and $c2Check -and $c3Check -and $c4Check -and $noRawAttach -and $noGlobalJniEnv -and $globalRefLifetimeSafe
 Assert-Condition $callbacksCheck "Contract 37d: All 4 bridge callbacks converge through cleanup with thread-local JNIEnv, zero raw AttachCurrentThread, and safe GlobalRef lifecycle"
 
+# -----------------------------------------------------------------------------
+# 9. AWT Bridge JNI Cache Atomic Publication & Data Race Hardening (Contract 38)
+# -----------------------------------------------------------------------------
+
+# Contract 38a: Dedicated atomic readiness flags with stdatomic.h and memory ordering
+$hasStdAtomic = ($awtBridgeContent -match '#include\s+<stdatomic\.h>')
+$hasInputFlag = ($awtBridgeContent -match '(\b_Atomic\s+int|\batomic_int)\s+s_input_cache_ready\s*=\s*0\s*;')
+$hasScreenFlag = ($awtBridgeContent -match '(\b_Atomic\s+int|\batomic_int)\s+s_screen_cache_ready\s*=\s*0\s*;')
+$hasClipboardFlag = ($awtBridgeContent -match '(\b_Atomic\s+int|\batomic_int)\s+s_clipboard_cache_ready\s*=\s*0\s*;')
+$hasWindowFlag = ($awtBridgeContent -match '(\b_Atomic\s+int|\batomic_int)\s+s_window_cache_ready\s*=\s*0\s*;')
+$c38a = $hasStdAtomic -and $hasInputFlag -and $hasScreenFlag -and $hasClipboardFlag -and $hasWindowFlag
+Assert-Condition $c38a "Contract 38a: stdatomic.h included and dedicated atomic readiness flags exist for all 4 cache groups"
+
+# Contract 38b: Input cache uses acquire-load and release-store without unlocked pointer gate
+$inputAcquire = ($awtBridgeContent -match 'atomic_load_explicit\s*\(\s*&s_input_cache_ready\s*,\s*memory_order_acquire\s*\)')
+$inputRelease = ($awtBridgeContent -match 'atomic_store_explicit\s*\(\s*&s_input_cache_ready\s*,\s*1\s*,\s*memory_order_release\s*\)')
+$noUnlockedInputGate = -not ($awtBridgeContent -match 'if\s*\(\s*method_ReceiveInput\s*==\s*NULL\s*\)\s*\{[\s\r\n]*pthread_mutex_lock')
+$c38b = $inputAcquire -and $inputRelease -and $noUnlockedInputGate
+Assert-Condition $c38b "Contract 38b: Input cache uses atomic acquire/release synchronization without unlocked pointer gate"
+
+# Contract 38c: Screen cache uses acquire-load and release-store without unlocked pointer gate
+$screenAcquire = ($awtBridgeContent -match 'atomic_load_explicit\s*\(\s*&s_screen_cache_ready\s*,\s*memory_order_acquire\s*\)')
+$screenRelease = ($awtBridgeContent -match 'atomic_store_explicit\s*\(\s*&s_screen_cache_ready\s*,\s*1\s*,\s*memory_order_release\s*\)')
+$noUnlockedScreenGate = -not ($awtBridgeContent -match 'if\s*\(\s*method_GetRGB\s*==\s*NULL\s*\)\s*\{[\s\r\n]*pthread_mutex_lock')
+$c38c = $screenAcquire -and $screenRelease -and $noUnlockedScreenGate
+Assert-Condition $c38c "Contract 38c: Screen cache uses atomic acquire/release synchronization without unlocked pointer gate"
+
+# Contract 38d: Window cache uses acquire-load and release-store without unlocked pointer gate
+$windowAcquire = ($awtBridgeContent -match 'atomic_load_explicit\s*\(\s*&s_window_cache_ready\s*,\s*memory_order_acquire\s*\)')
+$windowRelease = ($awtBridgeContent -match 'atomic_store_explicit\s*\(\s*&s_window_cache_ready\s*,\s*1\s*,\s*memory_order_release\s*\)')
+$noUnlockedWindowGate = -not ($awtBridgeContent -match 'if\s*\(\s*field_y\s*==\s*NULL\s*\)\s*\{[\s\r\n]*pthread_mutex_lock')
+$c38d = $windowAcquire -and $windowRelease -and $noUnlockedWindowGate
+Assert-Condition $c38d "Contract 38d: Window cache uses atomic acquire/release synchronization without unlocked pointer gate"
+
+# Contract 38e: Clipboard cache uses acquire-load and release-store with atomic readiness check
+$clipboardAcquire = ($awtBridgeContent -match 'atomic_load_explicit\s*\(\s*&s_clipboard_cache_ready\s*,\s*memory_order_acquire\s*\)')
+$clipboardRelease = ($awtBridgeContent -match 'atomic_store_explicit\s*\(\s*&s_clipboard_cache_ready\s*,\s*1\s*,\s*memory_order_release\s*\)')
+$noUnlockedClipboardGate = -not ($awtBridgeContent -match 'if\s*\(\s*method_SystemClipboardDataReceived\s*==\s*NULL\s*\)\s*\{[\s\r\n]*pthread_mutex_lock')
+$c38e = $clipboardAcquire -and $clipboardRelease -and $noUnlockedClipboardGate
+Assert-Condition $c38e "Contract 38e: Clipboard cache uses atomic acquire/release synchronization without unlocked pointer gate"
+
 Write-Host "=== FUNCTIONAL BACKEND + PIXEL-PROOF HARDENED CONTRACT SUMMARY ===" -ForegroundColor Cyan
 if ($failures.Count -gt 0) {
     Write-Host "FAILED with $($failures.Count) contract failure(s) (EXPECTED RED BEFORE IMPLEMENTATION):" -ForegroundColor Red
