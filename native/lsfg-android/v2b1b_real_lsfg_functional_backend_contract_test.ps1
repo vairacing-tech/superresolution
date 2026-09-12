@@ -404,6 +404,50 @@ $shutdownHookCheck = ($jreUtilsContent -match 'addShutdownHook' -and
                      ($jreUtilsContent -match 'sLogcatLock' -or $jreUtilsContent -match 'stopJRELogRedirect\(\)')
 Assert-Condition $shutdownHookCheck "Contract 36d: Secondary JVM shutdown hook registered and multi-start protected"
 
+# -----------------------------------------------------------------------------
+# 8. PojavLauncher AWT Bridge HotSpot JNI Attach/Detach Lifecycle (Contract 37)
+# -----------------------------------------------------------------------------
+
+$awtBridgePath = "C:\Proyectos\amethyst_worktree_real_lsfg_functional\app_pojavlauncher\src\main\jni\awt_bridge.c"
+Assert-Condition (Test-Path $awtBridgePath) "awt_bridge.c exists"
+
+$awtBridgeContent = if (Test-Path $awtBridgePath) { Get-Content $awtBridgePath -Raw } else { "" }
+
+# Contract 37a: GetEnv Handling & JNI_OK Non-Attaching Path
+$hasGetEnv = ($awtBridgeContent -match '\(\*runtimeJavaVMPtr\)->GetEnv\s*\(\s*runtimeJavaVMPtr\s*,\s*\(void\s*\*\*\)\s*&?(out_env|env)\s*,\s*JNI_VERSION_1_6\s*\)')
+$jniOkNoAttach = ($awtBridgeContent -match 'if\s*\(\s*(res|envStatus)\s*==\s*JNI_OK\s*\)\s*\{[\s\S]*?(out_attached_by_us\s*=\s*0|\*out_attached_by_us\s*=\s*0)[\s\S]*?return\s+(env|1|\*out_env)\s*;') -and
+                 -not ($awtBridgeContent -match 'if\s*\(\s*!(res|envStatus)\s*==\s*JNI_OK') -and
+                 -not ($awtBridgeContent -match 'if\s*\(\s*(res|envStatus)\s*!=\s*JNI_OK\s*\)\s*\{[\s\S]*?AttachCurrentThread')
+Assert-Condition ($hasGetEnv -and $jniOkNoAttach) "Contract 37a: GetEnv queries JNI_VERSION_1_6 and JNI_OK returns without attaching"
+
+# Contract 37b: Only JNI_EDETACHED Reaches AttachCurrentThreadAsDaemon and Other Errors Fail
+$strictEdetachedAttach = ($awtBridgeContent -match 'if\s*\(\s*(res|envStatus)\s*==\s*JNI_EDETACHED\s*\)\s*\{[\s\S]*?"PojavAWTBridge"[\s\S]*?AttachCurrentThreadAsDaemon') -or
+                         ($awtBridgeContent -match 'if\s*\(\s*(res|envStatus)\s*==\s*JNI_EDETACHED\s*\)\s*\{[\s\S]*?AttachCurrentThreadAsDaemon[\s\S]*?"PojavAWTBridge"')
+$noArbitraryAttach = -not ($awtBridgeContent -match 'else\s*\{[\s\S]*?AttachCurrentThreadAsDaemon') -and
+                     -not ($awtBridgeContent -match 'if\s*\(\s*!(res|envStatus)\s*\)[\s\S]*?AttachCurrentThreadAsDaemon')
+$explicitErrorFallthrough = ($awtBridgeContent -match 'return\s+(NULL|0)\s*;\s*\}\s*(static|\Z|jint|JNIEXPORT)')
+Assert-Condition ($strictEdetachedAttach -and $noArbitraryAttach -and $explicitErrorFallthrough) "Contract 37b: Strictly JNI_EDETACHED triggers AttachCurrentThreadAsDaemon with PojavAWTBridge; other errors return failure"
+
+# Contract 37c: Scoped HotSpot Detachment Helper Conditioned on attached_by_us
+$scopedDetachCheck = ($awtBridgeContent -match 'awt_bridge_detach_hotspot\s*\(') -and
+                     ($awtBridgeContent -match '\(\*runtimeJavaVMPtr\)->DetachCurrentThread\s*\(') -and
+                     ($awtBridgeContent -match 'if\s*\(\s*attached_by_us')
+$attachedByUsGuarded = ($awtBridgeContent -match '(out_attached_by_us\s*=\s*1|\*out_attached_by_us\s*=\s*1)[\s\S]*?return')
+Assert-Condition ($scopedDetachCheck -and $attachedByUsGuarded) "Contract 37c: Scoped HotSpot detach helper detaches strictly when attached_by_us is true"
+
+# Contract 37d: All 4 Bridge Callbacks Converge Through Cleanup with Safe GlobalRef Lifetime
+$c1Check = $awtBridgeContent -match 'Java_net_kdt_pojavlaunch_AWTInputBridge_nativeSendData[\s\S]*?awt_bridge_attach_hotspot[\s\S]*?goto cleanup;[\s\S]*?cleanup:[\s\S]*?awt_bridge_detach_hotspot'
+$c2Check = $awtBridgeContent -match 'Java_net_kdt_pojavlaunch_utils_JREUtils_renderAWTScreenFrame[\s\S]*?awt_bridge_attach_hotspot[\s\S]*?goto cleanup;[\s\S]*?cleanup:[\s\S]*?awt_bridge_detach_hotspot'
+$c3Check = $awtBridgeContent -match 'Java_net_kdt_pojavlaunch_AWTInputBridge_nativeClipboardReceived[\s\S]*?awt_bridge_attach_hotspot[\s\S]*?cleanup:[\s\S]*?awt_bridge_detach_hotspot'
+$c4Check = $awtBridgeContent -match 'Java_net_kdt_pojavlaunch_AWTInputBridge_nativeMoveWindow[\s\S]*?awt_bridge_attach_hotspot[\s\S]*?goto cleanup;[\s\S]*?cleanup:[\s\S]*?awt_bridge_detach_hotspot'
+$noRawAttach = -not ($awtBridgeContent -match '\(\*runtimeJavaVMPtr\)->AttachCurrentThread\s*\(')
+$noGlobalJniEnv = -not ($awtBridgeContent -match 'runtimeJNIEnvPtr_INPUT') -and
+                  -not ($awtBridgeContent -match 'runtimeJNIEnvPtr_GRAPHICS')
+$globalRefLifetimeSafe = ($awtBridgeContent -match 'NewGlobalRef') -and
+                         ($awtBridgeContent -match 'DeleteLocalRef')
+$callbacksCheck = $c1Check -and $c2Check -and $c3Check -and $c4Check -and $noRawAttach -and $noGlobalJniEnv -and $globalRefLifetimeSafe
+Assert-Condition $callbacksCheck "Contract 37d: All 4 bridge callbacks converge through cleanup with thread-local JNIEnv, zero raw AttachCurrentThread, and safe GlobalRef lifecycle"
+
 Write-Host "=== FUNCTIONAL BACKEND + PIXEL-PROOF HARDENED CONTRACT SUMMARY ===" -ForegroundColor Cyan
 if ($failures.Count -gt 0) {
     Write-Host "FAILED with $($failures.Count) contract failure(s) (EXPECTED RED BEFORE IMPLEMENTATION):" -ForegroundColor Red
