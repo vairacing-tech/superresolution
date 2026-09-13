@@ -26,6 +26,7 @@ import io.homo.superresolution.api.config.values.list.StringListValue;
 import io.homo.superresolution.api.config.values.single.BooleanValue;
 import io.homo.superresolution.api.config.values.single.EnumValue;
 import io.homo.superresolution.api.config.values.single.FloatValue;
+import io.homo.superresolution.api.config.values.single.IntValue;
 import io.homo.superresolution.api.config.values.single.StringValue;
 import io.homo.superresolution.api.platform.OperatingSystem;
 import io.homo.superresolution.api.platform.OperatingSystemType;
@@ -93,6 +94,8 @@ public class SuperResolutionConfig {
     public static final StringValue LOW_LATENCY_MODE;
     public static final EnumValue<NVIDIAReflexMode> NVIDIA_REFLEX_MODE;
     public static final EnumValue<FrameGenerationMode> FRAME_GENERATION_MODE;
+    public static final BooleanValue FRAME_GENERATION_ENABLED;
+    public static final IntValue FRAME_GENERATION_FACTOR;
     public static final StringValue FRAME_GENERATION_PROVIDER;
     public static final StringValue FRAME_GENERATION_BACKEND;
     public static final EnumValue<InteropSyncMode> INTEROP_SYNC_MODE;
@@ -334,6 +337,19 @@ public class SuperResolutionConfig {
                 FrameGenerationMode.class,
                 () -> FrameGenerationMode.OFF,
                 "NVIDIA DLSS Frame Generation mode"
+        );
+
+        FRAME_GENERATION_ENABLED = builder.defineBoolean(
+                "frame_generation/enabled",
+                () -> false,
+                "Enable Frame Generation"
+        );
+
+        FRAME_GENERATION_FACTOR = builder.defineInt(
+                "frame_generation/factor",
+                () -> 2,
+                "Frame Generation factor (2 for x2, 3 for x3)",
+                value -> value != null && (value == 2 || value == 3)
         );
 
         FRAME_GENERATION_PROVIDER = builder.defineString(
@@ -819,6 +835,39 @@ public class SuperResolutionConfig {
 
     public static void setFrameGenerationMode(FrameGenerationMode value) {
         FRAME_GENERATION_MODE.set(value);
+    }
+
+    public static boolean isFrameGenerationEnabled() {
+        return FRAME_GENERATION_ENABLED.get();
+    }
+
+    public static void setFrameGenerationEnabled(boolean value) {
+        FRAME_GENERATION_ENABLED.set(value);
+        applyFrameGenerationToNative();
+    }
+
+    public static int getFrameGenerationFactor() {
+        Integer f = FRAME_GENERATION_FACTOR.get();
+        if (f == null || f != 3) {
+            return 2;
+        }
+        return 3;
+    }
+
+    public static void setFrameGenerationFactor(int value) {
+        int sanitized = (value == 3) ? 3 : 2;
+        FRAME_GENERATION_FACTOR.set(sanitized);
+        applyFrameGenerationToNative();
+    }
+
+    public static void applyFrameGenerationToNative() {
+        if (com.lsfg.minecraft.LsfgNativeBridge.isLoaded()) {
+            try {
+                boolean enabled = isFrameGenerationEnabled();
+                int factor = getFrameGenerationFactor();
+                com.lsfg.minecraft.LsfgNativeBridge.setRuntimeConfig(enabled ? 1 : 0, factor, 0, 0);
+            } catch (Throwable ignored) {}
+        }
     }
 
     public static String getFrameGenerationProvider() {

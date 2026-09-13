@@ -40,4 +40,36 @@ ProbeStats get_probe_stats();
 /// Retrieves serialized string snapshot of all Vulkan probe counters.
 std::string get_probe_snapshot_string();
 
+struct LsfgRuntimeStatus {
+    uint32_t structSize;
+    uint32_t abiVersion;      // 3
+    int32_t  state;           // 0=OFF, 1=ARMING, 2=ACTIVE, 3=FALLBACK, 4=ERROR
+    int32_t  factor;          // 2 or 3
+    uint64_t nativePresented;
+    uint64_t generatedPresented;
+    uint64_t generationAttempts;
+    uint64_t generationSuccess;
+    uint64_t generationFallback;
+    float    nativeFps;
+    float    outputFps;
+    float    lastLsfgComputeMs;
+    uint32_t reserved[4];
+};
+
+struct LsfgRuntimeConfig {
+    uint32_t structSize;
+    uint32_t abiVersion;      // 3
+    int32_t  enabled;         // -1=no change, 0=OFF, 1=ON
+    int32_t  factor;          // -1=no change, 2=x2, 3=x3
+    int32_t  maxEvents;       // -1=no change, <=0=continuous
+    int32_t  armDelayMs;      // -1=no change, 0=immediate
+    uint32_t reserved[4];
+};
+
+/// Retrieves current runtime status from interposer bridge.
+int32_t get_runtime_status(LsfgRuntimeStatus *outStatus);
+
+/// Sends runtime configuration to interposer bridge.
+int32_t set_runtime_config(const LsfgRuntimeConfig *inConfig);
+
 } // namespace lsfg_mc

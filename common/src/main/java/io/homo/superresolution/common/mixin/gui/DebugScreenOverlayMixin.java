@@ -40,6 +40,9 @@ public class DebugScreenOverlayMixin {
             if (status.getF3Line4() != null) {
                 lines.add(status.getF3Line4());
             }
+            if (status.getF3LineFg() != null) {
+                lines.add(status.getF3LineFg());
+            }
         }
     }
     #else
@@ -59,6 +62,9 @@ public class DebugScreenOverlayMixin {
             }
             if (status.getF3Line4() != null) {
                 lines.add(status.getF3Line4());
+            }
+            if (status.getF3LineFg() != null) {
+                lines.add(status.getF3LineFg());
             }
         }
     }

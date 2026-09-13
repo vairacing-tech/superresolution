@@ -175,6 +175,12 @@ typedef int32_t (*PFN_lsfg_interposer_bridge_get_present_modes_v2)(
     uint32_t *pCount,
     VkPresentModeKHR *pModes
 );
+typedef int32_t (*PFN_lsfg_interposer_bridge_get_runtime_status)(
+    lsfg_mc::LsfgRuntimeStatus *outStatus
+);
+typedef int32_t (*PFN_lsfg_interposer_bridge_set_runtime_config)(
+    const lsfg_mc::LsfgRuntimeConfig *inConfig
+);
 
 std::atomic<uint64_t> g_bridgeCallbackCount{0};
 std::atomic<uint64_t> g_bridgeLastSerial{0};
@@ -182,6 +188,8 @@ std::atomic<bool> g_firstBridgeCallbackLogged{false};
 std::atomic<PFN_lsfg_interposer_bridge_get_snapshot_v2> g_getSnapshotV2Fn{nullptr};
 std::atomic<PFN_lsfg_interposer_bridge_get_swapchain_images_v2> g_getSwapchainImagesV2Fn{nullptr};
 std::atomic<PFN_lsfg_interposer_bridge_get_present_modes_v2> g_getPresentModesV2Fn{nullptr};
+std::atomic<PFN_lsfg_interposer_bridge_get_runtime_status> g_getRuntimeStatusFn{nullptr};
+std::atomic<PFN_lsfg_interposer_bridge_set_runtime_config> g_setRuntimeConfigFn{nullptr};
 std::atomic<bool> g_v2a1Logged{false};
 std::atomic<bool> g_v2a1WorkerStarted{false};
 std::atomic<bool> g_v2a1Ready{false};
@@ -911,6 +919,23 @@ void init_passive_vulkan_diagnostics(bool enable_v1_probe, bool enable_v2_probe)
                             g_getPresentModesV2Fn.store(present_mode_fn, std::memory_order_release);
                             LOGI("[LSFG-BRIDGE] interposer bridge v2 present-mode copy-out export discovered");
                         }
+
+                        PFN_lsfg_interposer_bridge_get_runtime_status status_fn =
+                            reinterpret_cast<PFN_lsfg_interposer_bridge_get_runtime_status>(
+                                dlsym(interposer_handle, "lsfg_interposer_bridge_get_runtime_status"));
+                        if (status_fn != nullptr) {
+                            g_getRuntimeStatusFn.store(status_fn, std::memory_order_release);
+                            LOGI("[LSFG-BRIDGE] interposer bridge get_runtime_status discovered");
+                        }
+
+                        PFN_lsfg_interposer_bridge_set_runtime_config config_fn =
+                            reinterpret_cast<PFN_lsfg_interposer_bridge_set_runtime_config>(
+                                dlsym(interposer_handle, "lsfg_interposer_bridge_set_runtime_config"));
+                        if (config_fn != nullptr) {
+                            g_setRuntimeConfigFn.store(config_fn, std::memory_order_release);
+                            LOGI("[LSFG-BRIDGE] interposer bridge set_runtime_config discovered");
+                        }
+
                         if (snap_fn != nullptr && image_fn != nullptr && present_mode_fn != nullptr &&
                             !g_v2a1WorkerStarted.exchange(true)) {
                             std::thread(v2a1_metadata_worker).detach();
@@ -966,6 +991,38 @@ std::string get_probe_snapshot_string() {
         s.acquireNextImageCalls, s.acquireNextImage2Calls, s.queuePresentCalls,
         s.swapchainWidth, s.swapchainHeight, s.swapchainFormat, s.swapchainImageCount);
     return std::string(buf);
+}
+
+int32_t get_runtime_status(LsfgRuntimeStatus *outStatus) {
+    if (outStatus == nullptr) return -1;
+    PFN_lsfg_interposer_bridge_get_runtime_status fn = g_getRuntimeStatusFn.load(std::memory_order_acquire);
+    if (fn == nullptr) {
+        fn = reinterpret_cast<PFN_lsfg_interposer_bridge_get_runtime_status>(
+            dlsym(RTLD_DEFAULT, "lsfg_interposer_bridge_get_runtime_status"));
+        if (fn != nullptr) {
+            g_getRuntimeStatusFn.store(fn, std::memory_order_release);
+        }
+    }
+    if (fn != nullptr) {
+        return fn(outStatus);
+    }
+    return -100;
+}
+
+int32_t set_runtime_config(const LsfgRuntimeConfig *inConfig) {
+    if (inConfig == nullptr) return -1;
+    PFN_lsfg_interposer_bridge_set_runtime_config fn = g_setRuntimeConfigFn.load(std::memory_order_acquire);
+    if (fn == nullptr) {
+        fn = reinterpret_cast<PFN_lsfg_interposer_bridge_set_runtime_config>(
+            dlsym(RTLD_DEFAULT, "lsfg_interposer_bridge_set_runtime_config"));
+        if (fn != nullptr) {
+            g_setRuntimeConfigFn.store(fn, std::memory_order_release);
+        }
+    }
+    if (fn != nullptr) {
+        return fn(inConfig);
+    }
+    return -100;
 }
 
 } // namespace lsfg_mc

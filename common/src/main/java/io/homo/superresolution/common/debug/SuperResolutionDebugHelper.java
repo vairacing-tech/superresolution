@@ -42,6 +42,8 @@ public class SuperResolutionDebugHelper {
         public long temporalGen;
         public boolean historyValid;
 
+        public String fgStatusLine;
+
         public String getF3Line1() {
             if (!enabled) {
                 return "SR: OFF | " + outputWidth + "x" + outputHeight + " native";
@@ -70,23 +72,28 @@ public class SuperResolutionDebugHelper {
             return UpscaleGpuMetrics.getInstance().getF3Line();
         }
 
+        public String getF3LineFg() {
+            return fgStatusLine;
+        }
+
         public String getChatSummary() {
             String irisPart = irisInstalled
                     ? (" | Iris: " + (shaderpackActive && shaderpackName != null ? shaderpackName : "installed (shaders OFF)"))
                     : "";
+            String fgPart = (fgStatusLine != null && !fgStatusLine.isEmpty()) ? " | " + fgStatusLine : "";
             if (!enabled) {
-                return "[SR] OFF | " + outputWidth + "x" + outputHeight + " native | " + backend + " (" + renderer + ")" + irisPart;
+                return "[SR] OFF | " + outputWidth + "x" + outputHeight + " native | " + backend + " (" + renderer + ")" + irisPart + fgPart;
             }
             int scalePct = (int) Math.round((1.0f / (scaleRatio <= 0 ? 1.0f : scaleRatio)) * 100.0f);
-            return "[SR] " + algorithm + " | " + internalWidth + "x" + internalHeight + " -> " + outputWidth + "x" + outputHeight + " | " + scalePct + "% | " + backend + "/" + renderer + irisPart;
+            return "[SR] " + algorithm + " | " + internalWidth + "x" + internalHeight + " -> " + outputWidth + "x" + outputHeight + " | " + scalePct + "% | " + backend + "/" + renderer + irisPart + fgPart;
         }
 
         public String getFullLogString() {
             return String.format(
                     Locale.ROOT,
-                    "[SR-STATUS] algorithm=%s, enabled=%b, internal=%dx%d, output=%dx%d, scale=%.2f, backend=%s, renderer=%s, javaOnly=%b, colorFormat=%s, depthFormat=%s, irisInstalled=%b, shaderpackActive=%b, shaderpack=%s, temporalGen=%d, historyValid=%b",
+                    "[SR-STATUS] algorithm=%s, enabled=%b, internal=%dx%d, output=%dx%d, scale=%.2f, backend=%s, renderer=%s, javaOnly=%b, colorFormat=%s, depthFormat=%s, irisInstalled=%b, shaderpackActive=%b, shaderpack=%s, temporalGen=%d, historyValid=%b, fgStatus=%s",
                     algorithm, enabled, internalWidth, internalHeight, outputWidth, outputHeight, (1.0f / (scaleRatio <= 0 ? 1.0f : scaleRatio)), backend, renderer, javaOnly,
-                    colorFormat, depthFormat, irisInstalled, shaderpackActive, shaderpackName, temporalGen, historyValid
+                    colorFormat, depthFormat, irisInstalled, shaderpackActive, shaderpackName, temporalGen, historyValid, fgStatusLine
             );
         }
     }
@@ -114,6 +121,24 @@ public class SuperResolutionDebugHelper {
         info.shaderpackName = io.homo.superresolution.common.compat.iris.IrisCompatHelper.getActiveShaderpackName();
         info.temporalGen = io.homo.superresolution.common.temporal.TemporalHistoryManager.getInstance().getResolutionGeneration();
         info.historyValid = io.homo.superresolution.common.temporal.TemporalHistoryManager.getInstance().isHistoryValid();
+
+        info.fgStatusLine = "FG: OFF";
+        if (com.lsfg.minecraft.LsfgNativeBridge.isLoaded()) {
+            try {
+                com.lsfg.minecraft.LsfgNativeBridge.RuntimeStatus rs = new com.lsfg.minecraft.LsfgNativeBridge.RuntimeStatus();
+                if (com.lsfg.minecraft.LsfgNativeBridge.getRuntimeStatus(rs)) {
+                    info.fgStatusLine = rs.getF3DisplayLine();
+                } else if (SuperResolutionConfig.isFrameGenerationEnabled()) {
+                    info.fgStatusLine = "FG: ARMING x" + SuperResolutionConfig.getFrameGenerationFactor();
+                }
+            } catch (Throwable ignored) {
+                if (SuperResolutionConfig.isFrameGenerationEnabled()) {
+                    info.fgStatusLine = "FG: ARMING x" + SuperResolutionConfig.getFrameGenerationFactor();
+                }
+            }
+        } else if (SuperResolutionConfig.isFrameGenerationEnabled()) {
+            info.fgStatusLine = "FG: ARMING x" + SuperResolutionConfig.getFrameGenerationFactor();
+        }
         return info;
     }
 
