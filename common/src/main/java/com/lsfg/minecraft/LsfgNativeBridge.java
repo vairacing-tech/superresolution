@@ -42,7 +42,8 @@ public final class LsfgNativeBridge {
 
     public static class RuntimeStatus {
         public int state; // 0=OFF, 1=ARMING, 2=ACTIVE, 3=FALLBACK, 4=ERROR
-        public int factor = 2; // 2 or 3
+        public int factor = 2; // Effective factor (2)
+        public int requestedFactor = 2; // Requested factor from user configuration
         public long nativePresented;
         public long generatedPresented;
         public long generationAttempts;
@@ -68,6 +69,9 @@ public final class LsfgNativeBridge {
             }
             String st = getStateString();
             String factorStr = "x" + (factor == 3 ? 3 : 2);
+            if (requestedFactor == 3 && factor != 3) {
+                factorStr += " (Req x3 N/A)";
+            }
             if (outputFps > 0.0f || nativeFps > 0.0f) {
                 return String.format(java.util.Locale.ROOT,
                         "FG: %s %s | Native %.1f | Output %.1f FPS",

@@ -161,6 +161,8 @@ Java_com_lsfg_minecraft_LsfgNativeBridge_getRuntimeStatus(
 
     if (fState) env->SetIntField(statusObj, fState, s.state);
     if (fFactor) env->SetIntField(statusObj, fFactor, s.factor);
+    jfieldID fReqFactor = env->GetFieldID(cls, "requestedFactor", "I");
+    if (fReqFactor) env->SetIntField(statusObj, fReqFactor, static_cast<jint>(s.reserved[0]));
     if (fNativePres) env->SetLongField(statusObj, fNativePres, static_cast<jlong>(s.nativePresented));
     if (fGenPres) env->SetLongField(statusObj, fGenPres, static_cast<jlong>(s.generatedPresented));
     if (fGenAttempts) env->SetLongField(statusObj, fGenAttempts, static_cast<jlong>(s.generationAttempts));
