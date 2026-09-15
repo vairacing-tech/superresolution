@@ -91,6 +91,9 @@ public class LsfgFrameGeneration implements FrameGenerationAlgorithm {
 
             capabilities = LsfgNativeBridge.getCapabilities();
             nativeBackendArmed = true;
+            try {
+                io.homo.superresolution.common.config.SuperResolutionConfig.applyFrameGenerationToNative();
+            } catch (Throwable ignored) {}
         } catch (Throwable t) {
             available = false;
             nativeBackendArmed = false;

@@ -183,6 +183,7 @@ public final class SuperResolution implements Destroyable {
         SuperResolution.getInstance().init();
         MaterialUI.init();
         FrameGeneration.initialize();
+        SuperResolutionConfig.ensureRuntimeConfigApplied();
         if (Platform.currentPlatform.isInstallIris() && !B3DVulkanBridge.isB3DVulkanBackend()) {
             try {
                 Class.forName("net.irisshaders.iris.Iris").getMethod("reload").invoke(null);
@@ -205,6 +206,7 @@ public final class SuperResolution implements Destroyable {
         SuperResolutionConfig.SPEC.load();
         SuperResolutionConfig.freezeStartupOptions();
         SRWorkModeManager.onClientSetup();
+        SuperResolutionConfig.ensureRuntimeConfigApplied();
     }
 
     public static void onClientTickEnd() {

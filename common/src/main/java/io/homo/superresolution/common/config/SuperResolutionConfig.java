@@ -837,12 +837,19 @@ public class SuperResolutionConfig {
         FRAME_GENERATION_MODE.set(value);
     }
 
+    private static volatile boolean pendingRuntimeApply = true;
+
+    public static boolean isPendingRuntimeApply() {
+        return pendingRuntimeApply;
+    }
+
     public static boolean isFrameGenerationEnabled() {
         return FRAME_GENERATION_ENABLED.get();
     }
 
     public static void setFrameGenerationEnabled(boolean value) {
         FRAME_GENERATION_ENABLED.set(value);
+        pendingRuntimeApply = true;
         applyFrameGenerationToNative();
     }
 
@@ -857,16 +864,36 @@ public class SuperResolutionConfig {
     public static void setFrameGenerationFactor(int value) {
         int sanitized = (value == 3) ? 3 : 2;
         FRAME_GENERATION_FACTOR.set(sanitized);
+        pendingRuntimeApply = true;
         applyFrameGenerationToNative();
     }
 
-    public static void applyFrameGenerationToNative() {
+    public static synchronized void applyFrameGenerationToNative() {
         if (com.lsfg.minecraft.LsfgNativeBridge.isLoaded()) {
             try {
                 boolean enabled = isFrameGenerationEnabled();
                 int factor = getFrameGenerationFactor();
-                com.lsfg.minecraft.LsfgNativeBridge.setRuntimeConfig(enabled ? 1 : 0, factor, 0, 0);
-            } catch (Throwable ignored) {}
+                SuperResolution.LOGGER.info("[LSFG-CONFIG] Auto-applying runtime config to native bridge: enabled={}, factor={}, pending={}", enabled, factor, pendingRuntimeApply);
+                int res = com.lsfg.minecraft.LsfgNativeBridge.setRuntimeConfig(enabled ? 1 : 0, factor, 0, 0);
+                if (res == 0) {
+                    pendingRuntimeApply = false;
+                    SuperResolution.LOGGER.info("[LSFG-CONFIG] Runtime config applied successfully: enabled={}, factor={}", enabled, factor);
+                } else {
+                    pendingRuntimeApply = true;
+                    SuperResolution.LOGGER.warn("[LSFG-CONFIG] Native bridge setRuntimeConfig returned code {}, keeping pending apply", res);
+                }
+            } catch (Throwable t) {
+                pendingRuntimeApply = true;
+                SuperResolution.LOGGER.warn("[LSFG-CONFIG] Exception applying runtime config to native bridge", t);
+            }
+        } else {
+            pendingRuntimeApply = true;
+        }
+    }
+
+    public static void ensureRuntimeConfigApplied() {
+        if (pendingRuntimeApply && com.lsfg.minecraft.LsfgNativeBridge.isLoaded()) {
+            applyFrameGenerationToNative();
         }
     }
 

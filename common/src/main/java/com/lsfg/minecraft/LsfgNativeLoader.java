@@ -79,6 +79,9 @@ public final class LsfgNativeLoader {
 
             String version = LsfgNativeBridge.getNativeVersion();
             System.out.println("[LSFG] Native backend loaded: " + version);
+            try {
+                io.homo.superresolution.common.config.SuperResolutionConfig.applyFrameGenerationToNative();
+            } catch (Throwable ignored) {}
             lastError = null;
             return true;
         } catch (Throwable t) {

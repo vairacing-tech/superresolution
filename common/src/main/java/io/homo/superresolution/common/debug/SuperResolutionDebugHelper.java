@@ -124,6 +124,7 @@ public class SuperResolutionDebugHelper {
 
         info.fgStatusLine = "FG: OFF";
         if (com.lsfg.minecraft.LsfgNativeBridge.isLoaded()) {
+            SuperResolutionConfig.ensureRuntimeConfigApplied();
             try {
                 com.lsfg.minecraft.LsfgNativeBridge.RuntimeStatus rs = new com.lsfg.minecraft.LsfgNativeBridge.RuntimeStatus();
                 if (com.lsfg.minecraft.LsfgNativeBridge.getRuntimeStatus(rs)) {
