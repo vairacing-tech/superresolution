@@ -347,7 +347,7 @@ public class SuperResolutionConfig {
 
         FRAME_GENERATION_FACTOR = builder.defineInt(
                 "frame_generation/factor",
-                () -> 2,
+                () -> 3,
                 "Frame Generation factor (2 for x2, 3 for x3)",
                 value -> value != null && (value == 2 || value == 3)
         );
@@ -865,10 +865,23 @@ public class SuperResolutionConfig {
         int sanitized = (value == 3) ? 3 : 2;
         FRAME_GENERATION_FACTOR.set(sanitized);
         pendingRuntimeApply = true;
+        writeEarlyFactorConfig(sanitized);
         applyFrameGenerationToNative();
     }
 
+    public static void writeEarlyFactorConfig(int factor) {
+        try {
+            java.io.File cfg = new java.io.File("/sdcard/Android/data/com.vairacing.amethystplus.debug/files/lsfg_factor.cfg");
+            java.io.File parent = cfg.getParentFile();
+            if (parent != null && !parent.exists()) {
+                parent.mkdirs();
+            }
+            java.nio.file.Files.writeString(cfg.toPath(), "factor=" + factor + "\n");
+        } catch (Throwable ignored) {}
+    }
+
     public static synchronized void applyFrameGenerationToNative() {
+        writeEarlyFactorConfig(getFrameGenerationFactor());
         if (com.lsfg.minecraft.LsfgNativeBridge.isLoaded()) {
             try {
                 boolean enabled = isFrameGenerationEnabled();

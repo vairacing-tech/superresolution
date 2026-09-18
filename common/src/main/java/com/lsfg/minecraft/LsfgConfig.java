@@ -18,7 +18,7 @@ import java.nio.file.Path;
 public final class LsfgConfig {
 
     public boolean enabled = true;
-    public int multiplier = 2;
+    public int multiplier = 3;
     public float flowScale = 1.0f;
     public boolean performanceMode = true;
     public boolean framegenFp16 = true;
@@ -38,11 +38,13 @@ public final class LsfgConfig {
                 char[] buffer = new char[(int) configFile.length()];
                 int read = reader.read(buffer);
                 String json = new String(buffer, 0, read);
-                if (json.contains("\"enabled\":false")) config.enabled = false;
-                if (json.contains("\"multiplier\":3")) config.multiplier = 3;
-                if (json.contains("\"performanceMode\":false")) config.performanceMode = false;
-                if (json.contains("\"framegenFp16\":false")) config.framegenFp16 = false;
-                if (json.contains("\"antiArtifacts\":false")) config.antiArtifacts = false;
+                String compact = json.replaceAll("\\s+", "");
+                if (compact.contains("\"enabled\":false")) config.enabled = false;
+                if (compact.contains("\"multiplier\":2")) config.multiplier = 2;
+                if (compact.contains("\"multiplier\":3")) config.multiplier = 3;
+                if (compact.contains("\"performanceMode\":false")) config.performanceMode = false;
+                if (compact.contains("\"framegenFp16\":false")) config.framegenFp16 = false;
+                if (compact.contains("\"antiArtifacts\":false")) config.antiArtifacts = false;
             } catch (Throwable ignored) {}
         } else {
             config.save(gameDir);

@@ -297,8 +297,8 @@ public final class UpscaleGpuMetrics {
         if (aggregator.getValidSamples() == 0) {
             return "SR GPU: collecting samples...";
         }
-        return String.format(Locale.ROOT, "SR GPU: %.3f ms avg | p95 %.3f ms | n=%d",
-                aggregator.getAverageGpuMs(), aggregator.getP95GpuMs(), aggregator.getValidSamples());
+        return String.format(Locale.ROOT, "SR GPU: %.3f ms avg | p95 %.3f ms",
+                aggregator.getAverageGpuMs(), aggregator.getP95GpuMs());
     }
 
     public synchronized void logStatus() {
