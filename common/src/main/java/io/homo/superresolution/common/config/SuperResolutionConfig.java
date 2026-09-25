@@ -871,7 +871,10 @@ public class SuperResolutionConfig {
 
     public static void writeEarlyFactorConfig(int factor) {
         try {
-            java.io.File cfg = new java.io.File("/sdcard/Android/data/com.vairacing.amethystplus.debug/files/lsfg_factor.cfg");
+            // The launcher supplies its own storage path for release/debug alike.
+            // Keep the legacy path only for older launchers without this property.
+            java.io.File cfg = new java.io.File(System.getProperty("amethyst.lsfg.factorConfig",
+                    "/sdcard/Android/data/com.vairacing.amethystplus.debug/files/lsfg_factor.cfg"));
             java.io.File parent = cfg.getParentFile();
             if (parent != null && !parent.exists()) {
                 parent.mkdirs();

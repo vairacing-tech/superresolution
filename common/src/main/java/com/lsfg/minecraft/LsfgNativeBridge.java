@@ -86,5 +86,7 @@ public final class LsfgNativeBridge {
 
     public static native int setRuntimeConfig(int enabled, int factor, int maxEvents, int armDelayMs);
 
+    public static native int notifyContentDiscontinuity();
+
     public static native void shutdown();
 }

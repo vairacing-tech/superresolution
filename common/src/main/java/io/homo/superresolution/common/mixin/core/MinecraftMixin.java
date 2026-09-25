@@ -19,6 +19,7 @@
 package io.homo.superresolution.common.mixin.core;
 
 import com.mojang.blaze3d.platform.Window;
+import com.lsfg.minecraft.LsfgContentHistory;
 import io.homo.superresolution.common.SuperResolution;
 import io.homo.superresolution.common.lowlatency.LowLatency;
 import io.homo.superresolution.common.minecraft.B3DVulkanBridge;
@@ -78,6 +79,7 @@ public abstract class MinecraftMixin {
 
     @Inject(at = @At(value = "HEAD"), method = "runTick")
     private void onRenderBegin(CallbackInfo ci) {
+        LsfgContentHistory.flushBeforeFrame();
         // Include Reflex pacing in the CPU frame delta used by GUI animations.
         PerformanceTracker.beginFrame();
         // Vulkan timestamps land a few frames after the work was recorded, so drain

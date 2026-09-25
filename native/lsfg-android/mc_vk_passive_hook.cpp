@@ -181,6 +181,7 @@ typedef int32_t (*PFN_lsfg_interposer_bridge_get_runtime_status)(
 typedef int32_t (*PFN_lsfg_interposer_bridge_set_runtime_config)(
     const lsfg_mc::LsfgRuntimeConfig *inConfig
 );
+typedef int32_t (*PFN_lsfg_interposer_bridge_notify_content_discontinuity)();
 
 std::atomic<uint64_t> g_bridgeCallbackCount{0};
 std::atomic<uint64_t> g_bridgeLastSerial{0};
@@ -190,6 +191,7 @@ std::atomic<PFN_lsfg_interposer_bridge_get_swapchain_images_v2> g_getSwapchainIm
 std::atomic<PFN_lsfg_interposer_bridge_get_present_modes_v2> g_getPresentModesV2Fn{nullptr};
 std::atomic<PFN_lsfg_interposer_bridge_get_runtime_status> g_getRuntimeStatusFn{nullptr};
 std::atomic<PFN_lsfg_interposer_bridge_set_runtime_config> g_setRuntimeConfigFn{nullptr};
+std::atomic<PFN_lsfg_interposer_bridge_notify_content_discontinuity> g_notifyContentDiscontinuityFn{nullptr};
 std::atomic<bool> g_v2a1Logged{false};
 std::atomic<bool> g_v2a1WorkerStarted{false};
 std::atomic<bool> g_v2a1Ready{false};
@@ -868,6 +870,30 @@ void init_passive_vulkan_diagnostics(bool enable_v1_probe, bool enable_v2_probe)
             if (get_ver != nullptr) {
                 uint32_t ver = get_ver();
                 if (ver == 1) {
+                    // Content cuts are functional, independent of diagnostic probes.
+                    auto discontinuity_fn = reinterpret_cast<PFN_lsfg_interposer_bridge_notify_content_discontinuity>(
+                        dlsym(interposer_handle, "lsfg_interposer_bridge_notify_content_discontinuity"));
+                    if (discontinuity_fn != nullptr) {
+                        g_notifyContentDiscontinuityFn.store(discontinuity_fn, std::memory_order_release);
+                        LOGI("[LSFG-BRIDGE] interposer content discontinuity export discovered");
+                    }
+                    // Runtime FG controls/status are functional, independent of diagnostic probes.
+                    PFN_lsfg_interposer_bridge_get_runtime_status status_fn =
+                        reinterpret_cast<PFN_lsfg_interposer_bridge_get_runtime_status>(
+                            dlsym(interposer_handle, "lsfg_interposer_bridge_get_runtime_status"));
+                    if (status_fn != nullptr) {
+                        g_getRuntimeStatusFn.store(status_fn, std::memory_order_release);
+                        LOGI("[LSFG-BRIDGE] interposer bridge get_runtime_status discovered");
+                    }
+
+                    PFN_lsfg_interposer_bridge_set_runtime_config config_fn =
+                        reinterpret_cast<PFN_lsfg_interposer_bridge_set_runtime_config>(
+                            dlsym(interposer_handle, "lsfg_interposer_bridge_set_runtime_config"));
+                    if (config_fn != nullptr) {
+                        g_setRuntimeConfigFn.store(config_fn, std::memory_order_release);
+                        LOGI("[LSFG-BRIDGE] interposer bridge set_runtime_config discovered");
+                    }
+
                     if (enable_v1_probe) {
                         LOGI("[LSFG-BRIDGE] interposer bridge v1 discovered");
                         printf("[LSFG-BRIDGE] interposer bridge v1 discovered\n");
@@ -918,22 +944,6 @@ void init_passive_vulkan_diagnostics(bool enable_v1_probe, bool enable_v2_probe)
                         if (present_mode_fn != nullptr) {
                             g_getPresentModesV2Fn.store(present_mode_fn, std::memory_order_release);
                             LOGI("[LSFG-BRIDGE] interposer bridge v2 present-mode copy-out export discovered");
-                        }
-
-                        PFN_lsfg_interposer_bridge_get_runtime_status status_fn =
-                            reinterpret_cast<PFN_lsfg_interposer_bridge_get_runtime_status>(
-                                dlsym(interposer_handle, "lsfg_interposer_bridge_get_runtime_status"));
-                        if (status_fn != nullptr) {
-                            g_getRuntimeStatusFn.store(status_fn, std::memory_order_release);
-                            LOGI("[LSFG-BRIDGE] interposer bridge get_runtime_status discovered");
-                        }
-
-                        PFN_lsfg_interposer_bridge_set_runtime_config config_fn =
-                            reinterpret_cast<PFN_lsfg_interposer_bridge_set_runtime_config>(
-                                dlsym(interposer_handle, "lsfg_interposer_bridge_set_runtime_config"));
-                        if (config_fn != nullptr) {
-                            g_setRuntimeConfigFn.store(config_fn, std::memory_order_release);
-                            LOGI("[LSFG-BRIDGE] interposer bridge set_runtime_config discovered");
                         }
 
                         if (snap_fn != nullptr && image_fn != nullptr && present_mode_fn != nullptr &&
@@ -1023,6 +1033,30 @@ int32_t set_runtime_config(const LsfgRuntimeConfig *inConfig) {
         return fn(inConfig);
     }
     return -100;
+}
+
+int32_t notify_content_discontinuity() {
+    auto fn = g_notifyContentDiscontinuityFn.load(std::memory_order_acquire);
+    if (fn == nullptr) {
+        fn = reinterpret_cast<PFN_lsfg_interposer_bridge_notify_content_discontinuity>(
+            dlsym(RTLD_DEFAULT, "lsfg_interposer_bridge_notify_content_discontinuity"));
+        // Amethyst loads the interposer RTLD_LOCAL. A menu can change before
+        // initNativeBackend discovers it, so retry its existing private handle.
+        if (fn == nullptr) {
+            const char *value = std::getenv("VULKAN_PTR");
+            if (value != nullptr && *value != '\0') {
+                char *end = nullptr;
+                unsigned long handle = std::strtoul(value, &end, 16);
+                if (handle != 0 && end != value && *end == '\0') {
+                    fn = reinterpret_cast<PFN_lsfg_interposer_bridge_notify_content_discontinuity>(
+                        dlsym(reinterpret_cast<void *>(handle),
+                              "lsfg_interposer_bridge_notify_content_discontinuity"));
+                }
+            }
+        }
+        if (fn != nullptr) g_notifyContentDiscontinuityFn.store(fn, std::memory_order_release);
+    }
+    return fn != nullptr ? fn() : -100;
 }
 
 } // namespace lsfg_mc

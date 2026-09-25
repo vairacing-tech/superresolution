@@ -202,7 +202,7 @@ public class AndroidConfigScreen extends Screen {
     private Component getFgFactorText() {
         int factor = SuperResolutionConfig.getFrameGenerationFactor();
         if (factor == 3) {
-            return Component.literal("FG Factor: x3 (Restart Required)");
+            return Component.literal("FG Factor: x3");
         }
         return Component.literal("FG Factor: x2");
     }

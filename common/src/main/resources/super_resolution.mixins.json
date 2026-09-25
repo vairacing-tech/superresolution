@@ -12,6 +12,7 @@
         "core.GlTextureViewMixin",
         "core.GLXMixin",
         "core.MinecraftMixin",
+        "core.ScreenChangeMixin",
         "core.OptionsMixin",
         "core.SkyRendererMixin",
         "core.accessor.LevelRendererAccessor",

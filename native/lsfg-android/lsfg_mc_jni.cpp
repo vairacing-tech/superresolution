@@ -189,4 +189,10 @@ Java_com_lsfg_minecraft_LsfgNativeBridge_setRuntimeConfig(
     return lsfg_mc::set_runtime_config(&cfg);
 }
 
+JNIEXPORT jint JNICALL
+Java_com_lsfg_minecraft_LsfgNativeBridge_notifyContentDiscontinuity(
+        JNIEnv * /*env*/, jclass /*clazz*/) {
+    return lsfg_mc::notify_content_discontinuity();
+}
+
 } // extern "C"

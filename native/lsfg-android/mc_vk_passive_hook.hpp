@@ -72,4 +72,7 @@ int32_t get_runtime_status(LsfgRuntimeStatus *outStatus);
 /// Sends runtime configuration to interposer bridge.
 int32_t set_runtime_config(const LsfgRuntimeConfig *inConfig);
 
+/// Requests fresh history at the next presentation boundary without changing FG settings.
+int32_t notify_content_discontinuity();
+
 } // namespace lsfg_mc
