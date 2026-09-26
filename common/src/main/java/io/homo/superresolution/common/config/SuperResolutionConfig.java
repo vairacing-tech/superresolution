@@ -870,6 +870,9 @@ public class SuperResolutionConfig {
     }
 
     public static void writeEarlyFactorConfig(int factor) {
+        if (!io.homo.superresolution.core.graphics.opengl.compat.MobileGluesRuntime.isLsfgSideEffectAllowed()) {
+            return;
+        }
         try {
             // The launcher supplies its own storage path for release/debug alike.
             // Keep the legacy path only for older launchers without this property.
@@ -884,6 +887,10 @@ public class SuperResolutionConfig {
     }
 
     public static synchronized void applyFrameGenerationToNative() {
+        if (!io.homo.superresolution.core.graphics.opengl.compat.MobileGluesRuntime.isLsfgSideEffectAllowed()) {
+            pendingRuntimeApply = true;
+            return;
+        }
         writeEarlyFactorConfig(getFrameGenerationFactor());
         if (com.lsfg.minecraft.LsfgNativeBridge.isLoaded()) {
             try {

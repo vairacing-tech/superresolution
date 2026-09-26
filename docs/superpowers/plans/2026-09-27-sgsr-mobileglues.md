@@ -14,7 +14,9 @@
 
 **Base reproducible:** 2414ece02206f6970718af06e2958f80e0104982, común a main/dev/release al planificar.
 
-**Estado:** PLAN LISTO PARA REVISIÓN, NO EJECUTADO. Ninguna casilla marcada implica código ya escrito. La creación de esta rama y los documentos no son implementación.
+**Estado:** EJECUCIÓN AUTORIZADA hasta obtener el primer JAR candidato, por instrucción del usuario del 2026-09-27. Tareas y casillas aún no ejecutadas no implican que el código exista. No incluye instalación ni validación física.
+
+**Hito de esta ejecución:** primer JAR de diagnóstico para prueba manual. Si el entorno no aporta dispositivo/contexto GPU, se documenta y se conserva como pendiente la cualificación física de las tareas 2, 4, 5 y 8; no se presenta el candidato como compatibilidad o mejora de rendimiento demostrada.
 
 ## Restricciones globales
 
@@ -56,7 +58,7 @@ Se usa el prefijo J = common/src/main/java/io/homo/superresolution/ y T = common
 
 No modificar cada archivo de la tabla por obligación. Los puntos condicionales se cierran como NO NECESARIO si las pruebas confirman el comportamiento de la base. No crear una infraestructura genérica de renderers para resolver este objetivo.
 
-## Tarea 0. Preparar una base aislada e inventario
+## Task 0: Preparar una base aislada e inventario
 
 **Salida:** código reproducible, dependencias y fixture real identificados. No se necesitan modificaciones del launcher.
 
@@ -80,7 +82,7 @@ En Windows, usar gradlew.bat con los mismos argumentos. Estos comandos reproduce
 - [ ] Inventariar el JAR resultante: nombre, hash, metadatos, mixins y recursos GLSL. Asegurar un único mod super_resolution en la instancia.
 - [ ] Abrir el documento de validación futura y hacer commit del inventario técnico no privado.
 
-## Tarea 1. Aislar MobileGlues y FG antes de probar la GPU
+## Task 1: Aislar MobileGlues y FG antes de probar la GPU
 
 **Archivos:** MobileGluesProfile.java y MobileGluesRuntime.java nuevos; puntos de arranque/configuración/UI de la tabla.
 **Pruebas:** T/MobileGluesProfileTest.java y T/MobileGluesFgIsolationTest.java.
@@ -105,7 +107,7 @@ La identidad procede del contexto vivo en el hilo de render. PreInit aún sin co
 
 Propiedad propuesta: -Dsuperresolution.mobileglues.mode=auto|compat|off. No introducirla como requisito para Zink ni forzar siempre Java-only en escritorio.
 
-## Tarea 2. Diagnóstico GPU acotado y primera sesión física
+## Task 2: Diagnóstico GPU acotado y primera sesión física
 
 **Archivos:** MobileGluesSgsrProbe.java, capacidades, registros de validación.
 **Salida:** una decisión verificable sobre la cadena real; aún no hay una afirmación de rendimiento.
@@ -127,7 +129,7 @@ Propiedad propuesta: -Dsuperresolution.mobileglues.mode=auto|compat|off. No intr
 - [ ] Clasificar: PASA cadena actual → tarea 3 solo corrige robustez y tarea 4 sin cambiar algoritmo de copia; falla fuente/enlace → tarea 3; falla copia → tarea 4; falla shader/DH sin SGSR → bloqueo de base.
 - [ ] Guardar el resultado con hashes. No repetir toda la matriz mientras haya un bloqueo temprano.
 
-## Tarea 3. Hacer fiable compilación, enlace y selección de capacidades
+## Task 3: Hacer fiable compilación, enlace y selección de capacidades
 
 **Archivos:** GlShaderProgram.java, ShaderSource.java, GlPipelineDescriptorSet.java, Gl.java y compat DSA únicamente si el probe lo exige.
 **Pruebas:** T/MobileGluesShaderBindingTest.java; ampliar DirectGLSLShaderPreprocessingTest.java con código de producción.
@@ -143,7 +145,7 @@ Propiedad propuesta: -Dsuperresolution.mobileglues.mode=auto|compat|off. No intr
 
 No usar capturas de texto del fuente como único test: ejercitar el preprocesador/política real y una fachada GL mínima con registro de llamadas donde sea necesario. El enlace GPU se valida físicamente, no en JUnit sin contexto.
 
-## Tarea 4. Resolver copias, recursos y ruta compute/raster
+## Task 4: Resolver copias, recursos y ruta compute/raster
 
 **Archivos:** GlTextureCopier.java, MinecraftRenderHandler.java, shaders copy.* y cachés/estado que el diagnóstico señale.
 **Pruebas:** T/MobileGluesTextureCopyLifecycleTest.java.
@@ -162,7 +164,7 @@ No usar capturas de texto del fuente como único test: ejercitar el preprocesado
 
 Parada: si exige cambiar sustancialmente MobileGlues, nuevos formatos generales, readback continuo o rediseño de recursos compartidos, documentar y solicitar un nuevo alcance. No empezar un port del driver.
 
-## Tarea 5. Estabilizar Iris/DH y cambios de resolución
+## Task 5: Estabilizar Iris/DH y cambios de resolución
 
 **Archivos:** mixin Fabric DH, IrisFramebufferUtils, handler de render/resize.
 **Pruebas:** T/DhDepthReconnectPolicyTest.java y mejoras de IrisResizeLifecycleTest.java.
@@ -181,7 +183,7 @@ Para evitar tests que solo repiten una condición, extraer una política mínima
 - [ ] Confirmar proveedor hack/SDR; si entra shader_compat/HDR, no degradarlo a RGBA8: informar que ese caso no está cualificado en esta fase.
 - [ ] Tests y commit: fix: keep Iris DH depth and SGSR targets consistent.
 
-## Tarea 6. Métricas opcionales y candidato completo
+## Task 6: Métricas opcionales y candidato completo
 
 **Archivos:** UpscaleGpuMetrics.java, helpers de compatibilidad y documento de validación.
 **Pruebas:** T/MobileGluesGpuMetricsTest.java.
@@ -203,7 +205,7 @@ Para evitar tests que solo repiten una condición, extraer una política mínima
 - [ ] El APK actual basta. Si aparece necesidad de cambiar el launcher, parar y documentar el contrato exacto antes de abrir una rama allí.
 - [ ] Commit: fix: gate MobileGlues metrics and document validation candidate.
 
-## Tarea 7. Segunda sesión física: compatibilidad y regresión
+## Task 7: Segunda sesión física: compatibilidad y regresión
 
 Instalar el JAR desde Codex en una instancia copiada, con backup del anterior y de configuración. No desinstalar el launcher, borrar datos, cambiar servidor o duplicar el mismo mod.
 
@@ -223,7 +225,7 @@ Instalar el JAR desde Codex en una instancia copiada, con backup del anterior y 
 - [ ] Si la referencia Zink se ve afectada en FG, ejecutar su smoke test existente OFF/X2 antes de dar el cambio por válido. No volver a certificar X3 completo sin que una modificación lo justifique.
 - [ ] Detener la matriz al primer fallo bloqueante. Tras corregirlo repetir el caso afectado y sus dependencias, no todas las pruebas indiscriminadamente.
 
-## Tarea 8. Medir beneficio real y cerrar con rollback claro
+## Task 8: Medir beneficio real y cerrar con rollback claro
 
 Benchmark principal dentro de MobileGlues, no contra un renderer diferente:
 

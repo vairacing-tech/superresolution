@@ -13,7 +13,7 @@ Adaptar el mod existente para usar SGSR V1 con MobileGlues directo, Minecraft Ja
 
 Este trabajo sustituye el objetivo de actualizar Zink. La rama del launcher integration/zink-legacy-modern-20260926 queda descartada para integración y su prototipo no se importa. Zink 23 continúa siendo una referencia de regresión, no una dependencia que haya que actualizar.
 
-La petición actual autoriza únicamente análisis, rama y documentos versionados. No autoriza implementar las tareas, compilar, instalar, cambiar opciones del dispositivo ni publicar releases. El artefacto futuro principal será un JAR Fabric del mod; no hace falta un APK nuevo salvo que se demuestre un cambio necesario en el launcher.
+En la petición que creó este documento solo se autorizaban análisis y documentación. Instrucción posterior del usuario (2026-09-27): queda autorizada la ejecución hasta producir un primer JAR candidato; la instalación y prueba física se harán más adelante desde Codex. No se autoriza publicar una release. El artefacto futuro principal será un JAR Fabric del mod; no hace falta un APK nuevo salvo que se demuestre un cambio necesario en el launcher.
 
 Fuera de alcance: REAL-LSFG/FG sobre MobileGlues, ANGLE, Vulkan nativo de Minecraft, SGSR2 temporal, Freedreno, port de Mesa, otros cargadores y adaptación universal de shaderpacks. No retirar REAL-LSFG del mod ni romper su funcionamiento con Zink.
 
