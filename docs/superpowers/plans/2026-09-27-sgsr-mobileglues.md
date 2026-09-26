@@ -16,7 +16,7 @@
 
 **Estado:** EJECUCIÓN AUTORIZADA hasta obtener el primer JAR candidato, por instrucción del usuario del 2026-09-27. Tareas y casillas aún no ejecutadas no implican que el código exista. No incluye instalación ni validación física.
 
-**Hito de esta ejecución:** primer JAR de diagnóstico para prueba manual. Si el entorno no aporta dispositivo/contexto GPU, se documenta y se conserva como pendiente la cualificación física de las tareas 2, 4, 5 y 8; no se presenta el candidato como compatibilidad o mejora de rendimiento demostrada.
+**Hito de esta ejecución:** primer JAR de diagnóstico construido en CI y listo para prueba manual. La cualificación física de las tareas 2, 4, 5 y 8 queda pendiente porque este entorno no aporta dispositivo/contexto GPU; no se presenta el candidato como compatibilidad o mejora de rendimiento demostrada. Evidencia y SHA-256: [registro del candidato](../validation/2026-09-27-sgsr-mobileglues.md).
 
 ## Restricciones globales
 
