@@ -19,6 +19,7 @@
 package io.homo.superresolution.core.graphics.opengl.dsa;
 
 import io.homo.superresolution.core.graphics.GraphicsCapabilities;
+import io.homo.superresolution.core.graphics.opengl.compat.MobileGluesRuntime;
 import org.lwjgl.opengl.GL43;
 
 import java.nio.*;
@@ -133,7 +134,9 @@ public class CompatDirectStateAccessImpl implements IGlDirectStateAccess {
                                  int width, int height) {
         int prevTex = glGetInteger(GL_TEXTURE_BINDING_2D);
         glBindTexture(GL_TEXTURE_2D, target);
-        if (gl43) {
+        // GLES image bindings reject mutable glTexImage2D destinations. MobileGlues
+        // reports the backend's numeric ES version, so a desktop GL 4.3 gate is wrong.
+        if (MobileGluesRuntime.supportsImmutableTexture2D()) {
             GL43.glTexStorage2D(
                     GL_TEXTURE_2D,
                     levels,

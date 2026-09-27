@@ -59,6 +59,37 @@ public final class MobileGluesRuntime {
         return initialized;
     }
 
+    public static boolean isVerifiedMobileGlues() {
+        return initializeFromCurrentContext() && decision.active() && decision.supportedBackend();
+    }
+
+    public static boolean supportsImmutableTexture2D() {
+        var caps = GL.getCapabilities();
+        int[] version = GraphicsCapabilities.getGLVersion();
+        return OpenGlFeaturePolicy.immutableTexture2D(version[0], version[1],
+                caps.GL_ARB_texture_storage, isVerifiedMobileGlues(), caps.glTexStorage2D != 0);
+    }
+
+    public static boolean supportsSgsr1Pipeline() {
+        if (!isVerifiedMobileGlues()) {
+            return false;
+        }
+        var caps = GL.getCapabilities();
+        int[] version = GraphicsCapabilities.getGLVersion();
+        return OpenGlFeaturePolicy.mobileGluesSgsr1(version[0], version[1], true,
+                supportsImmutableTexture2D(), caps.glBindImageTexture != 0,
+                caps.glDispatchCompute != 0, caps.glMemoryBarrier != 0);
+    }
+
+    public static boolean supportsSgsr1Algorithm() {
+        int[] version = GraphicsCapabilities.getGLVersion();
+        return OpenGlFeaturePolicy.atLeast(version[0], version[1], 4, 0) || supportsSgsr1Pipeline();
+    }
+
+    public static boolean isNoneAvailable(boolean supportsFrameGeneration) {
+        return OpenGlFeaturePolicy.noneAvailable(isVerifiedMobileGlues(), supportsFrameGeneration);
+    }
+
     /** Side effects wait for a verified renderer context, then follow its policy. */
     public static boolean isLsfgSideEffectAllowed() {
         return !Platform.isJavaOnlyMode() || (initialized && decision.allowLsfg());

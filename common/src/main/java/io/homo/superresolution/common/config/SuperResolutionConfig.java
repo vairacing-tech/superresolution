@@ -458,14 +458,19 @@ public class SuperResolutionConfig {
             return getDefaultAlgorithm();
         }
 
-        // None（仅帧生成模式）仅在光影包声明支持时可用；不写回配置，切换光影后自动恢复
+        // MobileGlues also uses None as a passthrough with frame generation disabled.
         if (AlgorithmDescriptions.NONE.equals(algo)
-                && !SRWorkModeManager.getCurrentState().supportsFrameGeneration()) {
+                && !isNoneAlgorithmAvailable()) {
             SuperResolution.LOGGER.warn("The current shader pack does not support frame-generation-only mode; the None algorithm is unavailable. Falling back to the default algorithm.");
             return getDefaultAlgorithm();
         }
 
         return algo;
+    }
+
+    public static boolean isNoneAlgorithmAvailable() {
+        return io.homo.superresolution.core.graphics.opengl.compat.MobileGluesRuntime.isNoneAvailable(
+                SRWorkModeManager.getCurrentState().supportsFrameGeneration());
     }
 
     public static synchronized boolean setUpscaleAlgorithm(AlgorithmDescription<?> newAlgo) {

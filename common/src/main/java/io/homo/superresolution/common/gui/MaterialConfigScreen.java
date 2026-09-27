@@ -835,7 +835,7 @@ public class MaterialConfigScreen extends NanoVGScreen<MaterialConfigScreen> {
                                 },
                                 () -> !SRWorkModeManager.getCurrentState().disabledAlgorithms().contains(algorithmDescription.getCodeName()),
                                 () -> !AlgorithmDescriptions.NONE.equals(algorithmDescription)
-                                        || SRWorkModeManager.getCurrentState().supportsFrameGeneration()
+                                        || SuperResolutionConfig.isNoneAlgorithmAvailable()
                         );
                     })
                     .setMenuItemTooltipSupplier((algo)->{
@@ -848,7 +848,7 @@ public class MaterialConfigScreen extends NanoVGScreen<MaterialConfigScreen> {
                             sb.append(Text.translatable("superresolution.screen.config.options.tooltip.algo.disabled_by_shaderpack").getString());
                         }
                         if (AlgorithmDescriptions.NONE.equals(algorithmDescription)
-                                && !SRWorkModeManager.getCurrentState().supportsFrameGeneration()) {
+                                && !SuperResolutionConfig.isNoneAlgorithmAvailable()) {
                             sb.append("\n");
                             sb.append(Text.translatable("superresolution.screen.config.options.tooltip.algo.none_requires_frame_generation_only").getString());
                         }

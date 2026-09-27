@@ -256,7 +256,7 @@ public final class SuperResolution implements Destroyable {
 
         boolean uiOnlyB3DVulkan = B3DVulkanBridge.isB3DVulkanBackend();
         if (!uiOnlyB3DVulkan) {
-            if (!commonRequirement.check().glVersionMet()) {
+            if (!commonRequirement.check().glVersionMet() && !MobileGluesRuntime.supportsSgsr1Pipeline()) {
                 MessageBox.createError(
                         Component.translatable("superresolution.common_requirement.not_support.version").getString().formatted(
                                 commonRequirement.getGlMajorVersion(),
@@ -336,6 +336,10 @@ public final class SuperResolution implements Destroyable {
 
             LOGGER.info("GPU vendor: {}", GraphicsCapabilities.detectGpuVendor().name());
             LOGGER.info("OpenGL version: {}", GraphicsCapabilities.getGLVersionString());
+            if (MobileGluesRuntime.isVerifiedMobileGlues()) {
+                LOGGER.info("[MobileGlues] immutableTexture2D={} sgsr1Pipeline={}",
+                        MobileGluesRuntime.supportsImmutableTexture2D(), MobileGluesRuntime.supportsSgsr1Pipeline());
+            }
 
             SRWorkModeManager.bootstrapProviders();
             RenderHandlerManager.initialize();
