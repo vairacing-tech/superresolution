@@ -35,6 +35,7 @@ import io.homo.superresolution.core.graphics.impl.vertex.IVertexBuffer;
 import io.homo.superresolution.core.graphics.impl.vertex.PrimitiveType;
 import io.homo.superresolution.core.graphics.impl.vertex.VertexAttributeFormat;
 import io.homo.superresolution.core.graphics.opengl.Gl;
+import io.homo.superresolution.core.graphics.opengl.compat.MobileGluesGlFunctions;
 import io.homo.superresolution.core.graphics.opengl.GlDevice;
 import io.homo.superresolution.core.graphics.opengl.GlState;
 import io.homo.superresolution.core.graphics.opengl.OpenGLException;
@@ -101,7 +102,7 @@ public class GlCommandDecoder implements ICommandDecoder {
                 int finalBit = bit;
                 putGlCommand(commandBuffer, () -> {
                     pushGroup(0x7180002, "Restore External Resource Barrier");
-                    glMemoryBarrier(finalBit);
+                    MobileGluesGlFunctions.memoryBarrier(finalBit);
                     popGroup();
                 });
             }
@@ -832,12 +833,12 @@ public class GlCommandDecoder implements ICommandDecoder {
         putGlCommand(commandBuffer, () -> {
             if (preBarrierMask != 0) {
                 pushGroup(0x7180003, "Barrier");
-                glMemoryBarrier(preBarrierMask);
+                MobileGluesGlFunctions.memoryBarrier(preBarrierMask);
                 popGroup();
             }
 
             pushGroup(0x7160001, "Compute");
-            glDispatchCompute(groupCountX, groupCountY, groupCountZ);
+            MobileGluesGlFunctions.dispatchCompute(groupCountX, groupCountY, groupCountZ);
             popGroup();
         });
 
@@ -854,7 +855,7 @@ public class GlCommandDecoder implements ICommandDecoder {
         int finalMask = mask;
         putGlCommand(commandBuffer, () -> {
             pushGroup(0x7180001, "Memory Barrier");
-            glMemoryBarrier(finalMask);
+            MobileGluesGlFunctions.memoryBarrier(finalMask);
             popGroup();
         });
     }

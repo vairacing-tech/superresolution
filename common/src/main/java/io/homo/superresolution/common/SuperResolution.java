@@ -48,6 +48,7 @@ import io.homo.superresolution.core.NativeLibManager;
 import io.homo.superresolution.core.RenderSystems;
 import io.homo.superresolution.core.SuperResolutionConstants;
 import io.homo.superresolution.core.graphics.GraphicsCapabilities;
+import io.homo.superresolution.core.graphics.opengl.compat.MobileGluesRuntime;
 import io.homo.superresolution.core.graphics.glslang.GlslangShaderCompiler;
 import io.homo.superresolution.core.graphics.opengl.GlState;
 import io.homo.superresolution.core.gui.MaterialUI;
@@ -236,9 +237,6 @@ public final class SuperResolution implements Destroyable {
             LOGGER.info("[SuperResolution] Native backend: SKIPPED");
             LOGGER.info("[SuperResolution] Glslang/SPIR-V compiler: SKIPPED");
             LOGGER.info("[SuperResolution] Internal Vulkan backend: SKIPPED");
-            if (com.lsfg.minecraft.LsfgPlatform.isProbeEnabled()) {
-                io.homo.superresolution.common.framegeneration.FrameGenerationManager.initialize(Platform.currentPlatform.getGameFolder());
-            }
         } else {
             NativeLibManager.extract(SuperResolutionConstants.NATIVE_LIBRARIES_DIR.getPath());
             NativeLibManager.load(SuperResolutionConstants.NATIVE_LIBRARIES_DIR.getPath());
@@ -258,7 +256,7 @@ public final class SuperResolution implements Destroyable {
 
         boolean uiOnlyB3DVulkan = B3DVulkanBridge.isB3DVulkanBackend();
         if (!uiOnlyB3DVulkan) {
-            if (!commonRequirement.check().glVersionMet()) {
+            if (!commonRequirement.check().glVersionMet() && !MobileGluesRuntime.supportsSgsr1Pipeline()) {
                 MessageBox.createError(
                         Component.translatable("superresolution.common_requirement.not_support.version").getString().formatted(
                                 commonRequirement.getGlMajorVersion(),
@@ -321,6 +319,14 @@ public final class SuperResolution implements Destroyable {
         try (GlState ignored = new GlState()) {
             RenderSystems.init();
 
+            if (MobileGluesRuntime.initializeFromCurrentContext()
+                    && MobileGluesRuntime.decision().allowLsfg()
+                    && com.lsfg.minecraft.LsfgPlatform.isProbeEnabled()) {
+                io.homo.superresolution.common.framegeneration.FrameGenerationManager.initialize(
+                        Platform.currentPlatform.getGameFolder()
+                );
+            }
+
             if (minecraft == null) {
                 minecraft = Minecraft.getInstance();
             }
@@ -330,6 +336,10 @@ public final class SuperResolution implements Destroyable {
 
             LOGGER.info("GPU vendor: {}", GraphicsCapabilities.detectGpuVendor().name());
             LOGGER.info("OpenGL version: {}", GraphicsCapabilities.getGLVersionString());
+            if (MobileGluesRuntime.isVerifiedMobileGlues()) {
+                LOGGER.info("[MobileGlues] immutableTexture2D={} sgsr1Pipeline={}",
+                        MobileGluesRuntime.supportsImmutableTexture2D(), MobileGluesRuntime.supportsSgsr1Pipeline());
+            }
 
             SRWorkModeManager.bootstrapProviders();
             RenderHandlerManager.initialize();

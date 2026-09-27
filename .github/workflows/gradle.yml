@@ -2,7 +2,7 @@ name: Android Build
 
 on:
   push:
-    branches: [ '*' ]
+    branches: [ '**' ]
   pull_request:
   workflow_dispatch:
 
@@ -40,10 +40,25 @@ jobs:
       - name: Build Android Fabric/OpenGL JAR
         run: ./gradlew assemble -Pminecraft_version_config=26.2
 
-      - name: Upload Android JAR
+      - name: Prepare MobileGlues SGSR candidate and checksum
+        shell: bash
+        run: |
+          mapfile -t candidate_jars < <(find fabric/build/libs -maxdepth 1 -type f -name 'super_resolution-fabric-26.2-*.opengl.jar' -print)
+          if [[ ${#candidate_jars[@]} -ne 1 ]]; then
+            printf 'Expected exactly one Fabric 26.2 OpenGL JAR, found %s\n' "${#candidate_jars[@]}" >&2
+            printf '%s\n' "${candidate_jars[@]}" >&2
+            exit 1
+          fi
+          candidate_dir=build/mobileglues-sgsr-candidate
+          mkdir -p "$candidate_dir"
+          candidate_name=super_resolution-android-sgsr1-mobileglues-mc26.2-candidate.jar
+          cp "${candidate_jars[0]}" "$candidate_dir/$candidate_name"
+          (cd "$candidate_dir" && sha256sum "$candidate_name" > SHA256SUMS.txt)
+
+      - name: Upload MobileGlues SGSR candidate
         uses: actions/upload-artifact@v4
         with:
-          name: super_resolution-android-sgsr1-mc26.2
+          name: super_resolution-android-sgsr1-mobileglues-mc26.2-candidate
           path: |
-            fabric/build/libs/super_resolution-fabric-26.2-*.opengl.jar
+            build/mobileglues-sgsr-candidate/*
           if-no-files-found: error

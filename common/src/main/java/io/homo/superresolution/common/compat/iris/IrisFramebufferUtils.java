@@ -28,17 +28,18 @@ public class IrisFramebufferUtils {
         int prevRead = glGetInteger(GL_READ_FRAMEBUFFER_BINDING);
         int prevDraw = glGetInteger(GL_DRAW_FRAMEBUFFER_BINDING);
 
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, fboId);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fboId);
+        try {
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, fboId);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fboId);
 
-        int id = GL41.glGetFramebufferAttachmentParameteri(
-                GL_FRAMEBUFFER,
-                GL_DEPTH_ATTACHMENT,
-                GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME
-        );
-
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, prevRead);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDraw);
-        return id;
+            return GL41.glGetFramebufferAttachmentParameteri(
+                    GL_FRAMEBUFFER,
+                    GL_DEPTH_ATTACHMENT,
+                    GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME
+            );
+        } finally {
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, prevRead);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDraw);
+        }
     }
 }
