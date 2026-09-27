@@ -20,6 +20,7 @@ package io.homo.superresolution.core.graphics.opengl.dsa;
 
 import io.homo.superresolution.core.graphics.GraphicsCapabilities;
 import io.homo.superresolution.core.graphics.opengl.compat.MobileGluesRuntime;
+import io.homo.superresolution.core.graphics.opengl.compat.MobileGluesGlFunctions;
 import org.lwjgl.opengl.GL43;
 
 import java.nio.*;
@@ -134,35 +135,42 @@ public class CompatDirectStateAccessImpl implements IGlDirectStateAccess {
                                  int width, int height) {
         int prevTex = glGetInteger(GL_TEXTURE_BINDING_2D);
         glBindTexture(GL_TEXTURE_2D, target);
-        // GLES image bindings reject mutable glTexImage2D destinations. MobileGlues
-        // reports the backend's numeric ES version, so a desktop GL 4.3 gate is wrong.
-        if (MobileGluesRuntime.supportsImmutableTexture2D()) {
-            GL43.glTexStorage2D(
-                    GL_TEXTURE_2D,
-                    levels,
-                    internalFormat,
-                    width,
-                    height
-            );
-        } else {
-            for (int level = 0; level < levels; level++) {
-                int levelWidth = Math.max(1, width >> level);
-                int levelHeight = Math.max(1, height >> level);
-
-                glTexImage2D(
+        try {
+            // GLES image bindings reject mutable glTexImage2D destinations. MobileGlues
+            // reports the backend's numeric ES version, so a desktop GL 4.3 gate is wrong.
+            if (MobileGluesRuntime.supportsImmutableTexture2D()) {
+                MobileGluesGlFunctions.textureStorage2D(
                         GL_TEXTURE_2D,
-                        level,
+                        levels,
                         internalFormat,
-                        levelWidth,
-                        levelHeight,
-                        0,
-                        getFormatFromInternal(internalFormat),
-                        getTypeFromInternal(internalFormat),
-                        (ByteBuffer) null
+                        width,
+                        height
                 );
+                if (MobileGluesRuntime.isVerifiedMobileGlues()
+                        && glGetTexParameteri(GL_TEXTURE_2D, GL43.GL_TEXTURE_IMMUTABLE_FORMAT) == 0) {
+                    throw new IllegalStateException("MobileGlues texture storage did not create an immutable texture");
+                }
+            } else {
+                for (int level = 0; level < levels; level++) {
+                    int levelWidth = Math.max(1, width >> level);
+                    int levelHeight = Math.max(1, height >> level);
+
+                    glTexImage2D(
+                            GL_TEXTURE_2D,
+                            level,
+                            internalFormat,
+                            levelWidth,
+                            levelHeight,
+                            0,
+                            getFormatFromInternal(internalFormat),
+                            getTypeFromInternal(internalFormat),
+                            (ByteBuffer) null
+                    );
+                }
             }
+        } finally {
+            glBindTexture(GL_TEXTURE_2D, prevTex);
         }
-        glBindTexture(GL_TEXTURE_2D, prevTex);
     }
 
     @Override
@@ -319,7 +327,7 @@ public class CompatDirectStateAccessImpl implements IGlDirectStateAccess {
     @Override
     public void bindImageTexture(int unit, int texture, int level, boolean layered,
                                  int layer, int access, int format) {
-        GL43.glBindImageTexture(
+        MobileGluesGlFunctions.bindImageTexture(
                 unit,
                 texture,
                 level,

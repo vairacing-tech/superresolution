@@ -4,6 +4,11 @@ package io.homo.superresolution.core.graphics.opengl.compat;
 public final class OpenGlFeaturePolicy {
     private OpenGlFeaturePolicy() {}
 
+    public static long resolveFunctionAddress(long declared, boolean verifiedMobileGlues,
+                                               java.util.function.LongSupplier lookup) {
+        return declared != 0 || !verifiedMobileGlues ? declared : lookup.getAsLong();
+    }
+
     public static boolean atLeast(int major, int minor, int requiredMajor, int requiredMinor) {
         return major > requiredMajor || (major == requiredMajor && minor >= requiredMinor);
     }

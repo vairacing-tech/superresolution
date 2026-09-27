@@ -67,18 +67,18 @@ public final class MobileGluesRuntime {
         var caps = GL.getCapabilities();
         int[] version = GraphicsCapabilities.getGLVersion();
         return OpenGlFeaturePolicy.immutableTexture2D(version[0], version[1],
-                caps.GL_ARB_texture_storage, isVerifiedMobileGlues(), caps.glTexStorage2D != 0);
+                caps.GL_ARB_texture_storage, isVerifiedMobileGlues(),
+                MobileGluesGlFunctions.textureStorage2DAddress() != 0);
     }
 
     public static boolean supportsSgsr1Pipeline() {
         if (!isVerifiedMobileGlues()) {
             return false;
         }
-        var caps = GL.getCapabilities();
         int[] version = GraphicsCapabilities.getGLVersion();
+        boolean imageCopy = MobileGluesGlFunctions.hasImageCopyFunctions();
         return OpenGlFeaturePolicy.mobileGluesSgsr1(version[0], version[1], true,
-                supportsImmutableTexture2D(), caps.glBindImageTexture != 0,
-                caps.glDispatchCompute != 0, caps.glMemoryBarrier != 0);
+                supportsImmutableTexture2D(), imageCopy, imageCopy, imageCopy);
     }
 
     public static boolean supportsSgsr1Algorithm() {
