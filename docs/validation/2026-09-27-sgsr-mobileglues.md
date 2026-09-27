@@ -1,4 +1,44 @@
-# SGSR1 + MobileGlues — primer candidato
+# SGSR1 + MobileGlues y Zink — validación en Odin
+
+## Resultado del JAR corregido (2026-09-27)
+
+El usuario acepta este JAR para SGSR1 tras las pruebas en Odin2 Portal (Adreno
+740), Amethyst Debug, instancia `Sampiland 2 mbl2 prueba`.
+
+- Código construido: `a902b4801c9f8a191331b8ef816f6c466eb0dd02`.
+- Versión del mod: `0.9.1-alpha.2+dev.a902b480.opengl`.
+- JAR probado: 28,688,093 bytes; SHA-256
+  `26b3f26c8af475639d361084532275efc97d8cd25a577577c9c665eeab316a22`.
+- Build local: JDK 25, Gradle 9.4, `assemble` correcto; 70 tests sin fallos.
+- MobileGlues 2: shaders SGSR1 compilados/enlazados, copia compute nativa con
+  cero diferencias en 1,024 bytes, activación y cambios None/Bilinear/SGSR1 sin
+  la corrupción inicial. Render interno 960×540 y salida 1920×1080.
+- Comparaciones estáticas y recorridos grabados: bordes más definidos que
+  Bilinear; no equivalencia con el detalle nativo. El usuario no percibió más
+  parpadeo que con Bilinear. No se midió rendimiento.
+- Zink: arranque de las 11:23, Mesa 23.0.4 / OpenGL 4.6; perfil MobileGlues
+  desactivado, SGSR1 compilado/enlazado y seleccionado al 50 %, sin fallback.
+  El usuario confirma imagen correcta. Hay seis mensajes
+  `GL_INVALID_OPERATION in glBindTextureUnit(non-gen name)` en `Thread-17`
+  durante la entrada al mundo; su origen no está identificado.
+- Mismo shader en ambas rutas:
+  `ComplementaryReimagined_r5.9.3-MG2-RGBA16F.zip`; FG desactivado.
+
+Las correcciones resuelven almacenamiento inmutable y funciones GLES que la
+tabla de capacidades desktop de LWJGL omitía. La resolución directa se limita
+a MobileGlues verificado; Zink conserva su ruta OpenGL.
+
+Alcance: candidato funcional aceptado en este dispositivo. No valida partidas
+largas, todas las escalas o combinaciones Iris/DH, otras GPU ni frame generation.
+En MobileGlues se bloquean los efectos LSFG. Los tests y las capturas no
+demuestran ganancias de rendimiento.
+
+Los registros locales están bajo
+`artifacts/SGSR_MOBILEGLUES_INSTALL_20260927`: `entrypoints-fix2`,
+`quality-comparison`, `motion-comparison` y `zink-check-112451`. No se incluyen
+logs completos de juego o del dispositivo en la release pública.
+
+## Registro histórico del primer candidato (reemplazado)
 
 **Estado:** primer candidato construido; validación en GPU pendiente.
 **Rama:** `integration/sgsr-mobileglues-20260927`.
