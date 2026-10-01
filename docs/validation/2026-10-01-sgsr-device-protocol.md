@@ -7,12 +7,17 @@ tiene Odin conectado ni `adb`. No se atribuye una mejora de FPS a los tests.
 
 Candidato ya construido y verificado, sin recompilar para esta guía:
 
-- Código: `11b9861b2b50d32c6e8c602934d58ccd8efa907e`.
-- CI: <https://github.com/vairacing-tech/superresolution/actions/runs/36923972022>.
+- Código: `19cc83059c464472a1bf4509ab5ac1424c509ee1`.
+- CI: <https://github.com/vairacing-tech/superresolution/actions/runs/36925647881>.
 - JAR: `super_resolution-android-sgsr1-mobileglues-mc26.2-candidate.jar`.
-- Tamaño: 28,653,935 bytes.
-- SHA-256: `de59ce9501c7ecc8a7507f146272be19186212e82ba2f8dad8b2367bb65b647b`.
-- Versión interna: `0.9.1-alpha.2+dev.11b9861.opengl`.
+- Tamaño: 28,654,010 bytes.
+- SHA-256: `ea80a3a23cde9d4259cd6eb6171751bffbe903176544e2747a4e34fefac42cc7`.
+- Versión interna: `0.9.1-alpha.2+dev.19cc830.opengl`.
+
+Incluye el fallback CPU cuando falla el inicio del timer GPU, además de la
+primera tanda de `11b9861b`. El JAR anterior de esa tanda sigue conservado por
+separado; no se ha sustituido ni recompilado. CI pasó tests, los seis contratos
+y `assemble`; se verificó el SHA-256 contra el checksum original del artefacto.
 
 Conservar fuera de `mods` el JAR anterior y una copia de la configuración antes
 de instalar el candidato en una instancia de prueba. No cargar dos versiones
