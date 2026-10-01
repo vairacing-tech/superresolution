@@ -248,6 +248,11 @@ public final class UpscaleGpuMetrics {
                 isInsideQuery = true;
             } catch (Throwable t) {
                 isInsideQuery = false;
+                // An advertised timer may still fail on a driver/bridge. Avoid retrying
+                // every frame and leaving both GPU warmup and CPU metrics stuck forever.
+                gpuTimerSupported = false;
+                resetForTransition("GPU timer query failed; using CPU-only timing until recreation");
+                LOGGER.warn("[SR-METRICS] Failed to start or collect timer query: {}", t.getMessage());
             }
         }
     }

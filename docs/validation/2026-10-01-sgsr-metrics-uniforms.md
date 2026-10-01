@@ -39,10 +39,18 @@ python3 -B scripts/sgsr_metrics_contract.py
 El contrato local compila las clases de producción con el módulo compilador de
 Java 21, sin instalar dependencias. Usa dobles deterministas solo para consultas
 GL, configuración y logging; no simula la lógica de métricas/caché que se prueba.
-Cubre cinco grupos: transiciones, intervalo CPU, correlación CPU/GPU y saturación,
-subidas UBO e invalidaciones de ciclo de vida. Incluye fallos de frame, recreación
+Cubre seis grupos: transiciones, intervalo CPU, correlación CPU/GPU y saturación,
+subidas UBO, invalidaciones de ciclo de vida y fallo de inicio del timer. Incluye fallos de frame, recreación
 durante una medida, fallback CPU, cambios de tamaño y recuperación de una subida
 incompleta. Se observaron fallos antes de las correcciones y éxito después.
+
+La revisión posterior reprodujo un fallo preexistente: una excepción persistente
+al iniciar el timer conservaba `gpuTimerSupported=true`, bloqueaba el warmup y
+no registraba CPU. La corrección desactiva ese timer, descarta la ventana y sus
+consultas pendientes y continúa con muestras CPU en los frames siguientes.
+La recreación vuelve a intentar el soporte GPU y libera los objetos anteriores.
+No se añaden consultas GL por frame para detectar errores que el driver no
+exponga como excepciones; su comportamiento real sigue pendiente del dispositivo.
 
 El workflow Android ejecuta además el contrato y la suite/build completos con
 JDK 25. El resultado debe consultarse para el SHA exacto de la rama; pasar el
@@ -59,3 +67,7 @@ JAR, resolución, renderer, shaderpack y configuración, verificando ON/OFF, res
 reentrada al mundo, Iris/DH, agua, transparencias y movimiento. Las pruebas de
 OpenGL real existentes requieren `-Ptest_opengl=true` y un contexto compatible;
 los dobles de este contrato no sustituyen esa validación.
+
+El [protocolo físico mínimo](2026-10-01-sgsr-device-protocol.md) detalla identidad
+del candidato, retorno a la versión anterior, A/B, ventanas válidas y criterios
+para interpretar resultados sin confundir tiempo de upscale con FPS.

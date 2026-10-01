@@ -18,12 +18,13 @@ STUBS = {
         public class GL15 {
             public static final int GL_QUERY_RESULT_AVAILABLE=1, GL_QUERY_RESULT=2;
             public static boolean available=false;
-            public static boolean failEndOnce=false;
+            public static boolean failEndOnce=false, failBegin=false;
+            public static int beginAttempts;
             public static int active, begins, ends, deleted;
             public static void glGenQueries(int[] ids){for(int i=0;i<ids.length;i++)ids[i]=i+1;}
             public static void glDeleteQueries(int[] ids){deleted+=ids.length;}
             public static int glGetQueryObjecti(int id,int name){return available?1:0;}
-            public static void glBeginQuery(int type,int id){if(active!=0)throw new AssertionError("nested GPU query");active=id;begins++;}
+            public static void glBeginQuery(int type,int id){beginAttempts++;if(failBegin)throw new IllegalStateException("begin-query failure");if(active!=0)throw new AssertionError("nested GPU query");active=id;begins++;}
             public static void glEndQuery(int type){if(failEndOnce){failEndOnce=false;throw new IllegalStateException("end-query failure");}if(active==0)throw new AssertionError("unbalanced GPU query");active=0;ends++;}
         }""",
     "org/lwjgl/opengl/GL33.java": "package org.lwjgl.opengl; public class GL33 {public static final int GL_TIME_ELAPSED=3; public static long glGetQueryObjectui64(int id,int name){return id*1000000L;} }",
@@ -171,9 +172,34 @@ public class SgsrMetricsContract {
         check(GL15.deleted-deleted==6,"disabled timing leaked allocated query objects");
         System.out.println("PASS: recreation during GPU/CPU-only dispatch, abort, resize and unsupported HUD");
     }
+    static void timerFailure()throws Exception{
+        reset(true);seed();
+        start();metrics.beginUpscale();metrics.endUpscale();finish(true);
+        check(metrics.isQuerySlotActive(0),"fixture must contain pending sample before timer failure");
+        int attempts=GL15.beginAttempts;
+        GL15.failBegin=true;
+        try {
+            for(int i=0;i<40;i++){start();metrics.beginUpscale();metrics.endUpscale();finish(true);}
+            check(!metrics.isGpuTimerSupported(),"failed timer remains advertised as supported");
+            check(metrics.getF3Line().contains("CPU submit"),"failed timer remains in GPU warmup");
+            check(metrics.getAggregator().getLatestCpuSubmitMs()>0,"failed timer never resumes CPU-only sampling");
+            check(metrics.getAggregator().getValidSamples()==0,"failed timer retains misleading GPU statistics");
+            check(GL15.beginAttempts-attempts==1,"broken timer retried every frame");
+            for(int i=0;i<6;i++)check(!metrics.isQuerySlotActive(i),"pending query survived timer failure");
+            check(GL15.active==0,"failed begin left an active query");
+        } finally {GL15.failBegin=false;}
+        int deleted=GL15.deleted;
+        metrics.destroyGl();
+        check(GL15.deleted-deleted==6,"failed timer leaked query objects");
+        metrics.initializeGl();
+        check(metrics.isGpuTimerSupported(),"timer support not retried on resource recreation");
+        start();metrics.beginUpscale();metrics.endUpscale();finish(true);
+        check(metrics.isQuerySlotActive(0),"GPU sampling did not recover after recreation");
+        System.out.println("PASS: failed timer falls back to CPU, clears GPU window, recovers on recreation");
+    }
     public static void main(String[] args)throws Exception{
         int failed=0;
-        for(String name:new String[]{"transitions","cpuScope","gpuCorrelation","viewport","lifecycle"}){
+        for(String name:new String[]{"transitions","cpuScope","gpuCorrelation","viewport","lifecycle","timerFailure"}){
             try{SgsrMetricsContract.class.getDeclaredMethod(name).invoke(null);}
             catch(InvocationTargetException e){failed++;System.err.println("FAIL "+name+": "+e.getCause());}
         }
