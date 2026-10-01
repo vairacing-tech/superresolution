@@ -50,6 +50,11 @@ import io.homo.superresolution.core.graphics.opengl.utils.GlTextureCopier;
 import io.homo.superresolution.core.graphics.impl.framebuffer.FrameBufferBindPoint;
 import io.homo.superresolution.common.upscale.AlgorithmManager;
 import io.homo.superresolution.common.upscale.DispatchResource;
+import io.homo.superresolution.common.upscale.algo.legacy.sgsr.v1.Sgsr1;
+import io.homo.superresolution.common.upscale.algo.legacy.sgsr.v1.Sgsr1OptimizationPolicy;
+import io.homo.superresolution.common.framegeneration.FrameGenerationMode;
+import io.homo.superresolution.common.presentation.capture.FrameCaptureManager;
+import io.homo.superresolution.api.InputResourceType;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.PostChain;
@@ -72,6 +77,7 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
     public ITexture emptyMotionVectorTexture;
     private IBindableFrameBuffer renderTarget;
     private boolean initialized;
+    private Sgsr1OptimizationPolicy.Plan lastInputPlan;
 
     public static TextureFormat getPreferredDepthFormat() {
         IBindableFrameBuffer origin = RenderHandlerManager.getOriginRenderTarget();
@@ -124,48 +130,8 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
                 RenderHandlerManager.getRenderHeight()
         );
 
-        colorTexture = RenderSystems.current().device().createTexture(
-                TextureDescription.create()
-                        .label("SRMainColorTexture")
-                        .format(SuperResolutionConfig.getInternalTextureFormat())
-                        .type(TextureType.Texture2D)
-                        .usages(TextureUsages.create().storage().sampler())
-                        .mipmapsDisabled()
-                        .wrapMode(TextureWrapMode.ClampToEdge)
-                        .size(
-                                RenderHandlerManager.getRenderWidth(),
-                                RenderHandlerManager.getRenderHeight()
-                        )
-                        .build()
-        );
-        depthTexture = RenderSystems.current().device().createTexture(
-                TextureDescription.create()
-                        .label("SRMainDepthTexture")
-                        .mipmapsDisabled()
-                        .format(TextureFormat.R32F)
-                        .usages(TextureUsages.create().storage().sampler())
-                        .type(TextureType.Texture2D)
-                        .wrapMode(TextureWrapMode.ClampToEdge)
-                        .size(
-                                RenderHandlerManager.getRenderWidth(),
-                                RenderHandlerManager.getRenderHeight()
-                        )
-                        .build()
-        );
-        emptyMotionVectorTexture = RenderSystems.current().device().createTexture(
-                TextureDescription.create()
-                        .label("SRMainEmptyMotionVectorTexture")
-                        .mipmapsDisabled()
-                        .format(TextureFormat.RG16F)
-                        .usages(TextureUsages.create().storage().sampler())
-                        .type(TextureType.Texture2D)
-                        .wrapMode(TextureWrapMode.ClampToEdge)
-                        .size(
-                                RenderHandlerManager.getRenderWidth(),
-                                RenderHandlerManager.getRenderHeight()
-                        )
-                        .build()
-        );
+        // Only the Minecraft render target needs depth unconditionally. Upscaler
+        // copies are allocated lazily, once the actual dispatch consumers are known.
         initialized = true;
         io.homo.superresolution.common.metrics.UpscaleGpuMetrics.getInstance().resetForTransition("targets initialized/recreated");
     }
@@ -268,6 +234,67 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
         }
     }
 
+    private Sgsr1OptimizationPolicy.Plan selectInputPlan(ITexture sourceColor) {
+        boolean builtInSgsr1 = SuperResolutionConfig.isEnableUpscale()
+                && SuperResolution.currentAlgorithm != null
+                && SuperResolution.currentAlgorithm.getClass() == Sgsr1.class;
+        boolean compatibleColor = false;
+        if (builtInSgsr1 && renderTarget instanceof GlFrameBuffer
+                && sourceColor != null && sourceColor.getClass() == GlTexture2D.class) {
+            IFrameBuffer output = SuperResolution.currentAlgorithm.getOutputFrameBuffer();
+            ITexture outputColor = output == null ? null : output.getTexture(FrameBufferAttachmentType.Color);
+            ITexture destinationColor = RenderHandlerManager.getOriginRenderTarget().getTexture(FrameBufferAttachmentType.Color);
+            compatibleColor = outputColor != null && destinationColor != null
+                    && outputColor.getTextureFormat() == sourceColor.getTextureFormat()
+                    && Sgsr1OptimizationPolicy.canBorrowColor(sourceColor.getTextureDescription(), sourceColor.handle(),
+                    outputColor.handle(), destinationColor.handle(), RenderHandlerManager.getRenderWidth(),
+                    RenderHandlerManager.getRenderHeight(), SuperResolutionConfig.getInternalTextureFormat());
+        }
+        boolean externalConsumers = SuperResolutionAPI.hasExternalEventConsumers();
+        boolean auxiliaryConsumer = FrameCaptureManager.isInitialized() || SuperResolutionConfig.isEnableDebug()
+                || SuperResolutionConfig.isEnableImgui()
+                || SuperResolutionConfig.isFrameGenerationEnabled()
+                || SuperResolutionConfig.getFrameGenerationMode() != FrameGenerationMode.OFF;
+        boolean boundedOperations = SuperResolutionConfig.getInternalTextureFormat().getGlslFormatQualifier() != null
+                && !(SuperResolutionConfig.getCaptureMode() == CaptureMode.C
+                && !Platform.currentPlatform.iris().isShaderPackInUse());
+        var config = SuperResolutionConfig.SPECIAL.SGSR1;
+        var plan = Sgsr1OptimizationPolicy.select(builtInSgsr1, externalConsumers, auxiliaryConsumer,
+                boundedOperations, config.REDUCED_GL_STATE.get(), config.SKIP_AUXILIARY_INPUTS.get(),
+                config.DIRECT_COLOR_INPUT.get(), compatibleColor);
+        if (builtInSgsr1 && !plan.equals(lastInputPlan)) {
+            LOGGER.info("[SGSR1-INPUTS] reducedState={} auxiliaryInputs={} directColor={} externalConsumers={} auxiliaryConsumer={}",
+                    plan.reducedState(), plan.auxiliaryInputs(), plan.directColor(), externalConsumers, auxiliaryConsumer);
+        }
+        lastInputPlan = plan;
+        return plan;
+    }
+
+    private void synchronizeInputTextures(Sgsr1OptimizationPolicy.Plan plan) {
+        colorTexture = ensureInputTexture(colorTexture, "SRMainColorTexture",
+                SuperResolutionConfig.getInternalTextureFormat(), !plan.directColor());
+        depthTexture = ensureInputTexture(depthTexture, "SRMainDepthTexture", TextureFormat.R32F, plan.auxiliaryInputs());
+        emptyMotionVectorTexture = ensureInputTexture(emptyMotionVectorTexture, "SRMainEmptyMotionVectorTexture",
+                TextureFormat.RG16F, plan.auxiliaryInputs());
+    }
+
+    private ITexture ensureInputTexture(ITexture current, String label, TextureFormat format, boolean needed) {
+        int width = RenderHandlerManager.getRenderWidth(), height = RenderHandlerManager.getRenderHeight();
+        if (current != null && (!needed || current.getWidth() != width || current.getHeight() != height
+                || current.getTextureFormat() != format)) {
+            current.destroy();
+            current = null;
+        }
+        if (needed && current == null) {
+            current = RenderSystems.current().device().createTexture(TextureDescription.create()
+                    .label(label).format(format).type(TextureType.Texture2D)
+                    .usages(TextureUsages.create().storage().sampler()).mipmapsDisabled()
+                    .filterMode(TextureFilterMode.Nearest).wrapMode(TextureWrapMode.ClampToEdge)
+                    .size(width, height).build());
+        }
+        return current;
+    }
+
     public void onRenderWorldEnd(CallType type) {
         if (!initialized) {
             return;
@@ -283,15 +310,21 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
         RenderHandlerManager.getOriginRenderTarget().bind(FrameBufferBindPoint.Write, true);
         //push SRUpscale
         GlDebug.pushGroup(0x7190000, "SR Upscale");
-        try (GlState ignored = new GlState()) {
+        ITexture sourceColor = renderTarget.getTexture(FrameBufferAttachmentType.Color);
+        Sgsr1OptimizationPolicy.Plan inputPlan = selectInputPlan(sourceColor);
+        boolean copiesInputs = !inputPlan.directColor() || inputPlan.auxiliaryInputs();
+        try (GlState ignored = inputPlan.reducedState()
+                ? new GlState(Sgsr1OptimizationPolicy.stateMask(copiesInputs), 2) : new GlState()) {
+            // Currently a no-op; retain its original placement under the state guard.
             AlgorithmManager.update();
             if (SuperResolutionConfig.isEnableUpscale()) {
                 io.homo.superresolution.common.metrics.UpscaleGpuMetrics.getInstance().beginUpscale();
                 try {
                     {
                         GlDebug.pushGroup(0x7190001, "Copy Resources");
+                        synchronizeInputTextures(inputPlan);
                         //ScaledRenderTarget.ColorTex copy to MinecraftRenderHandler.colorTexture
-                        GlTextureCopier.copy(
+                        if (!inputPlan.directColor()) GlTextureCopier.copy(
                                 CopyOperation.create()
                                         .src(renderTarget.getTexture(FrameBufferAttachmentType.Color))
                                         .dst(colorTexture)
@@ -300,7 +333,7 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
                                         .fromTo(CopyOperation.TextureChannel.B, CopyOperation.TextureChannel.B)
                                         .fromTo(CopyOperation.TextureChannel.A, CopyOperation.TextureChannel.A)
                         );
-                        GlTextureCopier.copy(
+                        if (inputPlan.auxiliaryInputs()) GlTextureCopier.copy(
                                 CopyOperation.create()
                                         .src(renderTarget.getTexture(FrameBufferAttachmentType.AnyDepth))
                                         .dst(depthTexture)
@@ -312,12 +345,18 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
                     {
                         GlDebug.pushGroup(0x7190002, "Prepare Dispatch Resource");
                         dispatchResource = AlgorithmManager.getDispatchResource(
-                                colorTexture,
+                                inputPlan.directColor() ? sourceColor : colorTexture,
                                 depthTexture,
                                 emptyMotionVectorTexture,
                                 new Vector2f(0),
                                 0
                         );
+                        // getDispatchResource may supply motion vectors from another
+                        // framebuffer when passed null. The SGSR1-only path omits them.
+                        if (!inputPlan.auxiliaryInputs()) {
+                            dispatchResource.resources().with(InputResourceType.Depth, null)
+                                    .with(InputResourceType.MotionVectors, null);
+                        }
                         GlDebug.popGroup();
                     }
 
@@ -470,18 +509,18 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
             resizeRenderTarget(handRenderTarget, screenWidth, screenHeight);
         }
 
-        if (colorTexture.getWidth() != renderWidth || colorTexture.getHeight() != renderHeight) {
+        if (colorTexture != null && (colorTexture.getWidth() != renderWidth || colorTexture.getHeight() != renderHeight)) {
             TextureDescription colorDesc = colorTexture.getTextureDescription().withSize(renderWidth, renderHeight);
             colorTexture.destroy();
             colorTexture = RenderSystems.current().device().createTexture(colorDesc);
         }
-        if (depthTexture.getWidth() != renderWidth || depthTexture.getHeight() != renderHeight) {
+        if (depthTexture != null && (depthTexture.getWidth() != renderWidth || depthTexture.getHeight() != renderHeight)) {
             TextureDescription depthDesc = depthTexture.getTextureDescription().withSize(renderWidth, renderHeight);
             depthTexture.destroy();
             depthTexture = RenderSystems.current().device().createTexture(depthDesc);
         }
 
-        if (emptyMotionVectorTexture.getWidth() != renderWidth || emptyMotionVectorTexture.getHeight() != renderHeight) {
+        if (emptyMotionVectorTexture != null && (emptyMotionVectorTexture.getWidth() != renderWidth || emptyMotionVectorTexture.getHeight() != renderHeight)) {
             TextureDescription depthDesc = emptyMotionVectorTexture.getTextureDescription().withSize(renderWidth, renderHeight);
             emptyMotionVectorTexture.destroy();
             emptyMotionVectorTexture = RenderSystems.current().device().createTexture(depthDesc);
@@ -548,9 +587,11 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
         }
         //还原RenderTarget
         RenderHandlerManager.setClientRenderTarget(RenderHandlerManager.getOriginRenderTarget().asMcRenderTarget());
-        colorTexture.destroy();
-        depthTexture.destroy();
-        emptyMotionVectorTexture.destroy();
+        if (colorTexture != null) colorTexture.destroy();
+        if (depthTexture != null) depthTexture.destroy();
+        if (emptyMotionVectorTexture != null) emptyMotionVectorTexture.destroy();
+        colorTexture = depthTexture = emptyMotionVectorTexture = null;
+        lastInputPlan = null;
         renderTarget.destroy();
         renderTargets.clear();
         io.homo.superresolution.common.metrics.UpscaleGpuMetrics.getInstance().destroyGl();
@@ -558,7 +599,8 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
     }
 
     public ITexture getColorTexture() {
-        return colorTexture;
+        // A direct input belongs to the render target, never to this auxiliary slot.
+        return colorTexture != null ? colorTexture : initialized ? renderTarget.getTexture(FrameBufferAttachmentType.Color) : null;
     }
 
     public ITexture getDepthTexture() {

@@ -44,7 +44,7 @@ public final class FGConstantsFeature {
         if (registered) {
             return;
         }
-        SuperResolutionAPI.EVENT_BUS.addListener(FGConstantsFeature::onAlgorithmDispatch);
+        SuperResolutionAPI.addAuditedDispatchListener(FGConstantsFeature::onAlgorithmDispatch);
         registered = true;
     }
 

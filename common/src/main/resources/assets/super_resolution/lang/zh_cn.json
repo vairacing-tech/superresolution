@@ -1,4 +1,10 @@
 {
+    "superresolution.screen.config.special.sgsr1.reduced_gl_state.name": "减少 OpenGL 状态保存",
+    "superresolution.screen.config.special.sgsr1.reduced_gl_state.tooltip": "仅保存内置 SGSR1 修改的状态。存在未确定的操作或扩展时仍完整保存。",
+    "superresolution.screen.config.special.sgsr1.skip_auxiliary_inputs.name": "跳过未使用的辅助输入",
+    "superresolution.screen.config.special.sgsr1.skip_auxiliary_inputs.tooltip": "没有其他使用者时，避免辅助深度复制和空运动矢量纹理分配。",
+    "superresolution.screen.config.special.sgsr1.direct_color_input.name": "直接读取渲染颜色",
+    "superresolution.screen.config.special.sgsr1.direct_color_input.tooltip": "纹理存储及采样方式匹配时，直接读取自有纹理。不兼容的输入保留原有复制路径。",
     "modmenu.nameTranslation.super_resolution": "超分辨率",
     "modmenu.descriptionTranslation.super_resolution": "喵",
     "key.super_resolution.open_config": "打开配置界面",

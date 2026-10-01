@@ -56,6 +56,14 @@ public class GlState implements AutoCloseable {
     public static final long STATE_DRAW_INDIRECT_BUFFER = 1L << 32;
     public static final long STATE_SHADER_STORAGE_BUFFER = 1L << 33;
     public static final long STATE_DEPTH_MASK = 1L << 34;
+    public static final long STATE_SAMPLERS = 1L << 35;
+    public static final long STATE_IMAGE0 = 1L << 36;
+    public static final long STATE_UNIFORM_BUFFER0 = 1L << 37;
+    public static final long STATE_STENCIL_TEST = 1L << 38;
+    public static final long STATE_POLYGON_MODE = 1L << 39;
+    public static final long STATE_DEPTH_CLAMP = 1L << 40;
+    public static final long STATE_RASTERIZER_DISCARD = 1L << 41;
+    public static final long STATE_DRAW_BUFFER0 = 1L << 42;
 
     public static final long STATE_ALL = ~0L;
     public static final long STATE_VERTEX_OPERATIONS = STATE_VERTEX_ATTRIB_ARRAY | STATE_VERTEX_BINDING_DIVISOR;
@@ -110,6 +118,13 @@ public class GlState implements AutoCloseable {
     public int drawIndirectBuffer;
     public int shaderStorageBuffer;
     public boolean depthMask;
+    private int[] samplers;
+    private int[] image0;
+    private boolean image0UsesMobileGlues;
+    private int uniformBuffer0;
+    private long uniformBuffer0Start, uniformBuffer0Size;
+    private boolean stencilTestEnabled, depthClampEnabled, rasterizerDiscardEnabled, blend0Enabled;
+    private int[] polygonMode, colorMask0;
 
     public GlState() {
         this(DEFAULT_MASK);
@@ -270,6 +285,37 @@ public class GlState implements AutoCloseable {
         if ((stateMask & STATE_DEPTH_MASK) != 0) {
             this.depthMask = glGetInteger(GL_DEPTH_WRITEMASK) != 0;
         }
+        if ((stateMask & STATE_SAMPLERS) != 0) {
+            samplers = new int[textureUnitCount];
+            for (int i = 0; i < samplers.length; i++) samplers[i] = glGetIntegeri(GL_SAMPLER_BINDING, i);
+        }
+        if ((stateMask & STATE_IMAGE0) != 0) {
+            image0UsesMobileGlues = org.lwjgl.opengl.GL.getCapabilities().glBindImageTexture == 0;
+            // MobileGlues exports the ES entry point even when LWJGL omits its GL42 table.
+            if (!image0UsesMobileGlues ||
+                    io.homo.superresolution.core.graphics.opengl.compat.MobileGluesRuntime.supportsSgsr1Pipeline()) {
+                image0 = new int[]{glGetIntegeri(GL_IMAGE_BINDING_NAME, 0), glGetIntegeri(GL_IMAGE_BINDING_LEVEL, 0),
+                        glGetIntegeri(GL_IMAGE_BINDING_LAYERED, 0), glGetIntegeri(GL_IMAGE_BINDING_LAYER, 0),
+                        glGetIntegeri(GL_IMAGE_BINDING_ACCESS, 0), glGetIntegeri(GL_IMAGE_BINDING_FORMAT, 0)};
+            }
+        }
+        if ((stateMask & STATE_UNIFORM_BUFFER0) != 0) {
+            uniformBuffer0 = glGetIntegeri(GL_UNIFORM_BUFFER_BINDING, 0);
+            uniformBuffer0Start = glGetInteger64i(GL_UNIFORM_BUFFER_START, 0);
+            uniformBuffer0Size = glGetInteger64i(GL_UNIFORM_BUFFER_SIZE, 0);
+        }
+        if ((stateMask & STATE_STENCIL_TEST) != 0) stencilTestEnabled = glIsEnabled(GL_STENCIL_TEST);
+        if ((stateMask & STATE_DEPTH_CLAMP) != 0) depthClampEnabled = glIsEnabled(GL_DEPTH_CLAMP);
+        if ((stateMask & STATE_RASTERIZER_DISCARD) != 0) rasterizerDiscardEnabled = glIsEnabled(GL_RASTERIZER_DISCARD);
+        if ((stateMask & STATE_POLYGON_MODE) != 0) {
+            polygonMode = new int[2];
+            glGetIntegerv(GL_POLYGON_MODE, polygonMode);
+        }
+        if ((stateMask & STATE_DRAW_BUFFER0) != 0) {
+            blend0Enabled = glIsEnabledi(GL_BLEND, 0);
+            colorMask0 = new int[4];
+            glGetIntegeri_v(GL_COLOR_WRITEMASK, 0, colorMask0);
+        }
     }
 
     public void restore() {
@@ -286,12 +332,8 @@ public class GlState implements AutoCloseable {
             // int originalActiveTexture = glGetInteger(GL_ACTIVE_TEXTURE);
             for (int i = 0; i < this.textures2D.length; i++) {
                 glActiveTexture(GL_TEXTURE0 + i);
-                if (this.textures2D[i] != 0) {
-                    glBindTexture(GL_TEXTURE_2D, this.textures2D[i]);
-                }
-                if (this.textures1D[i] != 0) {
-                    glBindTexture(GL_TEXTURE_1D, this.textures1D[i]);
-                }
+                glBindTexture(GL_TEXTURE_2D, this.textures2D[i]);
+                glBindTexture(GL_TEXTURE_1D, this.textures1D[i]);
             }
             //glActiveTexture(originalActiveTexture);
         }
@@ -360,6 +402,14 @@ public class GlState implements AutoCloseable {
         }
 
 
+        // Indexed binds also change the generic binding: restore the latter last.
+        if ((stateMask & STATE_UNIFORM_BUFFER0) != 0) {
+            if (uniformBuffer0 != 0 && uniformBuffer0Size > 0) {
+                glBindBufferRange(GL_UNIFORM_BUFFER, 0, uniformBuffer0, uniformBuffer0Start, uniformBuffer0Size);
+            } else {
+                glBindBufferBase(GL_UNIFORM_BUFFER, 0, uniformBuffer0);
+            }
+        }
         if ((stateMask & STATE_UNIFORM_BUFFER) != 0) {
             glBindBuffer(GL_UNIFORM_BUFFER, this.uniformBufferBinding);
         }
@@ -399,6 +449,29 @@ public class GlState implements AutoCloseable {
         }
         if ((stateMask & STATE_DEPTH_MASK) != 0) {
             glDepthMask(this.depthMask);
+        }
+        if (samplers != null) {
+            for (int i = 0; i < samplers.length; i++) glBindSampler(i, samplers[i]);
+        }
+        if (image0 != null) {
+            if (image0UsesMobileGlues) {
+                io.homo.superresolution.core.graphics.opengl.compat.MobileGluesGlFunctions.bindImageTexture(
+                        0, image0[0], image0[1], image0[2] != 0, image0[3], image0[4], image0[5]);
+            } else {
+                glBindImageTexture(0, image0[0], image0[1], image0[2] != 0, image0[3], image0[4], image0[5]);
+            }
+        }
+        if ((stateMask & STATE_STENCIL_TEST) != 0) setGlCap(GL_STENCIL_TEST, stencilTestEnabled);
+        if ((stateMask & STATE_DEPTH_CLAMP) != 0) setGlCap(GL_DEPTH_CLAMP, depthClampEnabled);
+        if ((stateMask & STATE_RASTERIZER_DISCARD) != 0) setGlCap(GL_RASTERIZER_DISCARD, rasterizerDiscardEnabled);
+        if (polygonMode != null) {
+            // Core profiles return one value; compatibility profiles may return two.
+            if (polygonMode[1] == 0 || polygonMode[0] == polygonMode[1]) glPolygonMode(GL_FRONT_AND_BACK, polygonMode[0]);
+            else { glPolygonMode(GL_FRONT, polygonMode[0]); glPolygonMode(GL_BACK, polygonMode[1]); }
+        }
+        if (colorMask0 != null) {
+            if (blend0Enabled) glEnablei(GL_BLEND, 0); else glDisablei(GL_BLEND, 0);
+            glColorMaski(0, colorMask0[0] != 0, colorMask0[1] != 0, colorMask0[2] != 0, colorMask0[3] != 0);
         }
         GlDebug.popGroup();
     }

@@ -49,7 +49,7 @@ public class AndroidConfigScreen extends Screen {
         int startY = 30;
         int buttonWidth = 240;
         int buttonHeight = 20;
-        int gap = 24;
+        int gap = Math.min(24, (this.height - startY - buttonHeight - 20) / 8);
 
         // 1. Enable / Disable
         this.addRenderableWidget(
@@ -121,7 +121,14 @@ public class AndroidConfigScreen extends Screen {
                 }).bounds(centerX - buttonWidth / 2, startY + gap * 3, buttonWidth, buttonHeight).build()
         );
 
-        // 5. Frame Generation [ OFF / ON ]
+        // SGSR1 settings stay on their own screen so each switch fits on Android.
+        this.addRenderableWidget(
+                Button.builder(Component.literal("SGSR1 Optimizations..."), btn ->
+                        MinecraftUtils.setScreen(new Sgsr1OptimizationScreen(this)))
+                        .bounds(centerX - buttonWidth / 2, startY + gap * 4, buttonWidth, buttonHeight).build()
+        );
+
+        // 6. Frame Generation [ OFF / ON ]
         this.addRenderableWidget(
                 Button.builder(getFgEnableText(), btn -> {
                     boolean next = !SuperResolutionConfig.isFrameGenerationEnabled();
@@ -129,10 +136,10 @@ public class AndroidConfigScreen extends Screen {
                     btn.setMessage(getFgEnableText());
                     SuperResolutionConfig.SPEC.save();
                     updateStatusText();
-                }).bounds(centerX - buttonWidth / 2, startY + gap * 4, buttonWidth, buttonHeight).build()
+                }).bounds(centerX - buttonWidth / 2, startY + gap * 5, buttonWidth, buttonHeight).build()
         );
 
-        // 6. Frame Generation Factor [ x2 / x3 ]
+        // 7. Frame Generation Factor [ x2 / x3 ]
         this.addRenderableWidget(
                 Button.builder(getFgFactorText(), btn -> {
                     int current = SuperResolutionConfig.getFrameGenerationFactor();
@@ -141,22 +148,22 @@ public class AndroidConfigScreen extends Screen {
                     btn.setMessage(getFgFactorText());
                     SuperResolutionConfig.SPEC.save();
                     updateStatusText();
-                }).bounds(centerX - buttonWidth / 2, startY + gap * 5, buttonWidth, buttonHeight).build()
+                }).bounds(centerX - buttonWidth / 2, startY + gap * 6, buttonWidth, buttonHeight).build()
         );
 
-        // 7. Runtime Status Display / SR Debug Info Button
+        // 8. Runtime Status Display / SR Debug Info Button
         statusButton = this.addRenderableWidget(
                 Button.builder(getStatusButtonText(), btn -> {
                     SuperResolutionDebugHelper.printDebugInfo();
                     updateStatusText();
-                }).bounds(centerX - buttonWidth / 2, startY + gap * 6, buttonWidth, buttonHeight).build()
+                }).bounds(centerX - buttonWidth / 2, startY + gap * 7, buttonWidth, buttonHeight).build()
         );
 
-        // 8. Done / Back Button
+        // 9. Done / Back Button
         this.addRenderableWidget(
                 Button.builder(Component.literal("Done"), btn -> {
                     onClose();
-                }).bounds(centerX - buttonWidth / 2, startY + gap * 7 + 4, buttonWidth, buttonHeight).build()
+                }).bounds(centerX - buttonWidth / 2, startY + gap * 8 + 4, buttonWidth, buttonHeight).build()
         );
     }
 

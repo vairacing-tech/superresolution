@@ -160,8 +160,8 @@ public class Sgsr1 extends AbstractAlgorithm {
         org.lwjgl.opengl.GL11.glViewport(0, 0, outputDim.getWidth(), outputDim.getHeight());
         org.lwjgl.opengl.GL11.glDisable(org.lwjgl.opengl.GL11.GL_DEPTH_TEST);
         org.lwjgl.opengl.GL11.glDisable(org.lwjgl.opengl.GL11.GL_CULL_FACE);
-        org.lwjgl.opengl.GL11.glDisable(org.lwjgl.opengl.GL11.GL_BLEND);
-        org.lwjgl.opengl.GL11.glColorMask(true, true, true, true);
+        org.lwjgl.opengl.GL30.glDisablei(org.lwjgl.opengl.GL11.GL_BLEND, 0);
+        org.lwjgl.opengl.GL30.glColorMaski(0, true, true, true, true);
         org.lwjgl.opengl.GL11.glDepthMask(false);
 
         ICommandBuffer commandBuffer = RenderSystems.current().device().defaultCommandPool().createCommandBuffer();
