@@ -24,9 +24,20 @@ import io.homo.superresolution.common.minecraft.handler.RenderHandlerManager;
 import io.homo.superresolution.core.graphics.impl.framebuffer.IFrameBuffer;
 import net.neoforged.bus.api.BusBuilder;
 import net.neoforged.bus.api.IEventBus;
+import io.homo.superresolution.api.event.AlgorithmDispatchEvent;
+import io.homo.superresolution.api.event.DispatchEventGuard;
+import java.util.function.Consumer;
 
 public class SuperResolutionAPI {
-    public static final IEventBus EVENT_BUS = BusBuilder.builder().build();
+    private static final DispatchEventGuard GUARDED_EVENTS = new DispatchEventGuard(BusBuilder.builder().build());
+    public static final IEventBus EVENT_BUS = GUARDED_EVENTS;
+
+    public static boolean hasExternalEventConsumers() { return GUARDED_EVENTS.hasExternalListeners(); }
+
+    /** Internal listeners only; unknown API consumers must use EVENT_BUS. */
+    public static void addAuditedDispatchListener(Consumer<AlgorithmDispatchEvent> listener) {
+        GUARDED_EVENTS.addAuditedListener(AlgorithmDispatchEvent.class, listener);
+    }
 
     public static IFrameBuffer getOriginMinecraftFrameBuffer() {
         return RenderHandlerManager.getOriginRenderTarget();

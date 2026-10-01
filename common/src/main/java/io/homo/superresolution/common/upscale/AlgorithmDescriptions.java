@@ -43,6 +43,7 @@ import io.homo.superresolution.common.upscale.algo.none.None;
 import io.homo.superresolution.common.upscale.algo.xess.XeSS;
 import io.homo.superresolution.core.NativeLibManager;
 import io.homo.superresolution.core.graphics.opengl.Gl;
+import io.homo.superresolution.core.graphics.opengl.compat.MobileGluesRuntime;
 import net.minecraft.network.chat.Component;
 
 import java.util.List;
@@ -106,8 +107,7 @@ public class AlgorithmDescriptions {
             .displayName("Snapdragon™ Game Super Resolution 1")
             .requirement(
                     Requirement.nothing()
-                            .glMajorVersion(4)
-                            .glMinorVersion(0)
+                            .isTrue(MobileGluesRuntime::supportsSgsr1Algorithm)
             )
             .qualityPresets(SGSR1_QUALITY_PRESETS)
             .customUpscaleRatio(true)

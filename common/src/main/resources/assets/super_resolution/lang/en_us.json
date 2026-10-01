@@ -1,4 +1,10 @@
 {
+    "superresolution.screen.config.special.sgsr1.reduced_gl_state.name": "Reduce OpenGL State Capture",
+    "superresolution.screen.config.special.sgsr1.reduced_gl_state.tooltip": "Save only the state modified by built-in SGSR1. Unbounded operations and extensions retain full capture.",
+    "superresolution.screen.config.special.sgsr1.skip_auxiliary_inputs.name": "Skip Unused Auxiliary Inputs",
+    "superresolution.screen.config.special.sgsr1.skip_auxiliary_inputs.tooltip": "Avoid auxiliary depth copying and empty motion-vector allocation when no other consumer needs them.",
+    "superresolution.screen.config.special.sgsr1.direct_color_input.name": "Read Rendered Color Directly",
+    "superresolution.screen.config.special.sgsr1.direct_color_input.tooltip": "Avoid the input color copy when owned texture storage and sampling match. Incompatible inputs use the existing copy.",
     "modmenu.nameTranslation.super_resolution": "Super Resolution",
     "modmenu.descriptionTranslation.super_resolution": "Meow",
     "key.super_resolution.open_config": "Open Configuration Screen",

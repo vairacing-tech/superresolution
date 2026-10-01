@@ -118,6 +118,12 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
     testImplementation("org.lwjgl:lwjgl:${versionConfig.common.lwjglVersion}")
     testImplementation("org.lwjgl:lwjgl-opengl:${versionConfig.common.lwjglVersion}")
+    testImplementation("org.lwjgl:lwjgl-glfw:${versionConfig.common.lwjglVersion}")
+    if (System.getProperty("os.name").startsWith("Windows")) {
+        testRuntimeOnly("org.lwjgl:lwjgl:${versionConfig.common.lwjglVersion}:natives-windows")
+        testRuntimeOnly("org.lwjgl:lwjgl-opengl:${versionConfig.common.lwjglVersion}:natives-windows")
+        testRuntimeOnly("org.lwjgl:lwjgl-glfw:${versionConfig.common.lwjglVersion}:natives-windows")
+    }
     testImplementation("net.java.dev.jna:jna:5.14.0")
     testImplementation("it.unimi.dsi:fastutil:8.5.13")
     testImplementation("org.joml:joml:1.10.8")
@@ -301,6 +307,7 @@ tasks.named<ProcessResources>("processResources") {
 tasks.withType<Test> {
     useJUnitPlatform()
     classpath = testSourceSet.runtimeClasspath
+    systemProperty("superresolution.test.opengl", providers.gradleProperty("test_opengl").getOrElse("false"))
 }
 
 /*

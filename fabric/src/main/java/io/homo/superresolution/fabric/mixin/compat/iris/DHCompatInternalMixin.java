@@ -19,6 +19,7 @@
 package io.homo.superresolution.fabric.mixin.compat.iris;
 
 import io.homo.superresolution.common.compat.iris.IrisFramebufferUtils;
+import io.homo.superresolution.common.compat.iris.DhDepthReconnectPolicy;
 import net.irisshaders.iris.compat.dh.DHCompatInternal;
 import net.irisshaders.iris.gl.framebuffer.GlFramebuffer;
 import org.spongepowered.asm.mixin.Mixin;
@@ -38,28 +39,40 @@ public class DHCompatInternalMixin {
 
     @Inject(method = "reconnectDHTextures", at = @At("RETURN"))
     public void fixDHDepth(int depthTex, CallbackInfo ci) {
-        if (dhTerrainFramebuffer != null && IrisFramebufferUtils.getFramebufferDepthAttachment(dhWaterFramebuffer.getId()) != depthTex) {
-            sr$reconnectTextures(depthTex);
+        Integer terrainDepth = dhTerrainFramebuffer == null
+                ? null : IrisFramebufferUtils.getFramebufferDepthAttachment(dhTerrainFramebuffer.getId());
+        Integer waterDepth = dhWaterFramebuffer == null
+                ? null : IrisFramebufferUtils.getFramebufferDepthAttachment(dhWaterFramebuffer.getId());
+        DhDepthReconnectPolicy.Reconnect reconnect =
+                DhDepthReconnectPolicy.evaluate(terrainDepth, waterDepth, depthTex);
+        if (reconnect.terrain()) {
+            sr$reconnectTerrainDepth(depthTex);
         }
-
-        if (dhWaterFramebuffer != null && IrisFramebufferUtils.getFramebufferDepthAttachment(dhWaterFramebuffer.getId()) != depthTex) {
-            sr$reconnectTextures(depthTex);
+        if (reconnect.water()) {
+            sr$reconnectWaterDepth(depthTex);
         }
     }
 
     @Unique
-    private void sr$reconnectTextures(int depthTex) {
+    private void sr$reconnectTerrainDepth(int depthTex) {
         #if MC_VER < MC_1_21_5
         if (dhTerrainFramebuffer != null) {
             dhTerrainFramebuffer.addDepthAttachment(depthTex);
-        }
-        if (dhWaterFramebuffer != null) {
-            dhWaterFramebuffer.addDepthAttachment(depthTex);
         }
         #else
         if (dhTerrainFramebuffer != null) {
             dhTerrainFramebuffer.addDepthAttachmentBypass(depthTex);
         }
+        #endif
+    }
+
+    @Unique
+    private void sr$reconnectWaterDepth(int depthTex) {
+        #if MC_VER < MC_1_21_5
+        if (dhWaterFramebuffer != null) {
+            dhWaterFramebuffer.addDepthAttachment(depthTex);
+        }
+        #else
         if (dhWaterFramebuffer != null) {
             dhWaterFramebuffer.addDepthAttachmentBypass(depthTex);
         }

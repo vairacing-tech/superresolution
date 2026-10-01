@@ -43,7 +43,7 @@ public final class FrameCaptureManager {
             FramePacingTiming framePacingTiming
     ) {
         if (!registered) {
-            SuperResolutionAPI.EVENT_BUS.addListener(FrameCaptureManager::onAlgorithmDispatch);
+            SuperResolutionAPI.addAuditedDispatchListener(FrameCaptureManager::onAlgorithmDispatch);
             registered = true;
         }
         FRAME_RING.initialize(device, framePacingTiming);

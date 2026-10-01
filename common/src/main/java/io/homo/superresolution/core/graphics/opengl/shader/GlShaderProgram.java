@@ -69,20 +69,17 @@ public class GlShaderProgram implements IShaderProgram, IDebuggableObject {
         if (glGetProgrami(handle, GL_LINK_STATUS) == GL_FALSE) {
             String log = glGetProgramInfoLog(handle);
             String errorDetails = String.format(
-                    "着色器程序 '%s' 链接失败，暂时忽略\n错误日志:\n%s",
+                    "Shader program '%s' failed to link.\nLink log:\n%s",
                     description.shaderName(),
                     log
             );
             LOGGER.error(errorDetails);
 
             saveLinkErrorArtifacts(log);
-            /*
             glDeleteProgram(handle);
             handle = 0;
-
+            isCompiled = false;
             throw new ShaderCompileException(errorDetails);
-            */
-
         }
     }
 
@@ -331,6 +328,7 @@ public class GlShaderProgram implements IShaderProgram, IDebuggableObject {
     }
 
     public void compile(boolean compat) {
+        this.isCompiled = false;
         EnumMap<ShaderType, ShaderSource> shaderSources = description.sourceMap();
         validateShaderTypes();
         boolean isDirectGLSL = Platform.isJavaOnlyMode() || !NativeLibManager.nativeApiAvailable();
