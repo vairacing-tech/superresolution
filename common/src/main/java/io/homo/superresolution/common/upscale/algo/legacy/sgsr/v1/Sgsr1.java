@@ -60,9 +60,11 @@ public class Sgsr1 extends AbstractAlgorithm {
     private StructuredData buffer;
     private IBuffer ubo;
     private IVertexBuffer quadVertexBuffer;
+    private final Sgsr1ViewportCache viewportCache = new Sgsr1ViewportCache();
 
     @Override
     public void initialize(InitializationDescription desc) {
+        viewportCache.invalidate();
         this.initDesc = desc;
         buffer = Std140StructBuilder.start()
                 .vec4Entry("ViewportInfo")
@@ -98,6 +100,12 @@ public class Sgsr1 extends AbstractAlgorithm {
                         .uniformSamplerTexture("ps0", 1)
                         .build());
         sgsrShader.compile();
+        // The block index and its binding belong to this linked program, not to a frame.
+        int progId = (int) sgsrShader.handle();
+        int blockIdx = org.lwjgl.opengl.GL31.glGetUniformBlockIndex(progId, "sgsr1_data");
+        if (blockIdx != org.lwjgl.opengl.GL31.GL_INVALID_INDEX) {
+            org.lwjgl.opengl.GL31.glUniformBlockBinding(progId, blockIdx, 0);
+        }
 
         LOGGER.info("[SuperResolution] Algorithm: SGSR1");
         LOGGER.info("[SuperResolution] Internal render resolution: {}x{}", RenderHandlerManager.getRenderWidth(), RenderHandlerManager.getRenderHeight());
@@ -134,25 +142,23 @@ public class Sgsr1 extends AbstractAlgorithm {
                 dispatchResource.screenWidth(), dispatchResource.screenHeight()
         );
 
-        buffer.setVec4(
-                "ViewportInfo",
-                1.0f / inputDim.getWidth(),
-                1.0f / inputDim.getHeight(),
-                (float) inputDim.getWidth(),
-                (float) inputDim.getHeight()
-        );
-        buffer.fillBuffer();
+        boolean uploadViewport = viewportCache.beginUpload(inputDim.getWidth(), inputDim.getHeight());
+        if (uploadViewport) {
+            buffer.setVec4(
+                    "ViewportInfo",
+                    1.0f / inputDim.getWidth(),
+                    1.0f / inputDim.getHeight(),
+                    (float) inputDim.getWidth(),
+                    (float) inputDim.getHeight()
+            );
+            buffer.fillBuffer();
+        }
 
         sgsrPipeline.descriptorSet().samplerTexture("ps0", dispatchResource.resources().get(InputResourceType.Color));
         sgsrPipeline.descriptorSet().uniformBuffer("sgsr1_data", ubo);
         sgsrPipeline.descriptorSet().update();
 
-        // Explicit fallback bindings for OpenGL compatibility
-        int progId = (int) sgsrShader.handle();
-        int blockIdx = org.lwjgl.opengl.GL31.glGetUniformBlockIndex(progId, "sgsr1_data");
-        if (blockIdx != org.lwjgl.opengl.GL31.GL_INVALID_INDEX) {
-            org.lwjgl.opengl.GL31.glUniformBlockBinding(progId, blockIdx, 0);
-        }
+        // This context binding is shared with Minecraft/Iris and must still be restored every dispatch.
         org.lwjgl.opengl.GL30.glBindBufferBase(org.lwjgl.opengl.GL31.GL_UNIFORM_BUFFER, 0, (int) ubo.handle());
 
         // Explicit full-screen raster state for SGSR output framebuffer
@@ -166,7 +172,7 @@ public class Sgsr1 extends AbstractAlgorithm {
 
         ICommandBuffer commandBuffer = RenderSystems.current().device().defaultCommandPool().createCommandBuffer();
         commandBuffer.begin();
-        commandBuffer.writeToBuffer(ubo, 0, buffer);
+        if (uploadViewport) commandBuffer.writeToBuffer(ubo, 0, buffer);
         commandBuffer.setViewport(0, 0, outputDim.getWidth(), outputDim.getHeight());
         commandBuffer.beginRenderPass(renderPass);
         commandBuffer.bindPipeline(sgsrPipeline);
@@ -174,11 +180,13 @@ public class Sgsr1 extends AbstractAlgorithm {
         commandBuffer.endRenderPass();
         commandBuffer.end();
         RenderSystems.current().device().submitCommandBuffer(commandBuffer);
+        if (uploadViewport) viewportCache.uploaded(inputDim.getWidth(), inputDim.getHeight());
         return true;
     }
 
     @Override
     public void destroy() {
+        viewportCache.invalidate();
         output.destroy();
         sgsrShader.destroy();
         sgsrPipeline.destroy();

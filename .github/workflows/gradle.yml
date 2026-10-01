@@ -37,6 +37,9 @@ jobs:
       - name: Run Android SGSR1 regression tests
         run: ./gradlew :common:test --rerun-tasks -Pminecraft_version_config=26.2
 
+      - name: Verify SGSR metrics lifecycle without a GPU
+        run: python3 -B scripts/sgsr_metrics_contract.py
+
       - name: Build Android Fabric/OpenGL JAR
         run: ./gradlew assemble -Pminecraft_version_config=26.2
 

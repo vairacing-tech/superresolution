@@ -38,6 +38,7 @@ public final class UpscaleGpuMetrics {
     // GPU Timer state
     private boolean initialized = false;
     private boolean gpuTimerSupported = false;
+    private boolean queriesAllocated = false;
     private final int[] queryIds = new int[QUERY_RING_SIZE];
     private final boolean[] queryActive = new boolean[QUERY_RING_SIZE];
     private final double[] pendingCpuSubmitMs = new double[QUERY_RING_SIZE];
@@ -46,6 +47,11 @@ public final class UpscaleGpuMetrics {
 
     // CPU timing
     private long cpuStartTimeNano = 0;
+    private boolean cpuSubmissionActive = false;
+    private boolean cpuSubmissionDiscarded = false;
+    private int submittedQueryIndex = -1;
+    private int lastSgsrRequestedOptions = -1;
+    private int lastSgsrEffectiveOptions = -1;
 
     // Aggregator for statistical metrics
     private final MetricsAggregator aggregator = new MetricsAggregator(WINDOW_SIZE, WARMUP_FRAMES);
@@ -74,6 +80,7 @@ public final class UpscaleGpuMetrics {
             gpuTimerSupported = org.lwjgl.opengl.GL.getCapabilities().OpenGL33;
             if (gpuTimerSupported) {
                 GL15.glGenQueries(queryIds);
+                queriesAllocated = true;
                 discardPendingQueries();
                 LOGGER.info("[SR-METRICS] gpuTimerSupported=true (queryRingSize={})", QUERY_RING_SIZE);
             } else {
@@ -87,14 +94,16 @@ public final class UpscaleGpuMetrics {
 
     public synchronized void destroyGl() {
         if (!initialized) return;
-        if (gpuTimerSupported) {
+        discardPendingQueries();
+        if (queriesAllocated) {
             try {
                 GL15.glDeleteQueries(queryIds);
             } catch (Throwable ignored) {}
         }
+        queriesAllocated = false;
         initialized = false;
         gpuTimerSupported = false;
-        discardPendingQueries();
+        cpuSubmissionActive = false;
     }
 
     /**
@@ -102,10 +111,42 @@ public final class UpscaleGpuMetrics {
      * Prevents old GPU query results from contaminating the new measurement window.
      */
     public synchronized void discardPendingQueries() {
+        if (cpuSubmissionActive) cpuSubmissionDiscarded = true;
+        if (isInsideQuery) {
+            try {
+                GL15.glEndQuery(GL33.GL_TIME_ELAPSED);
+            } catch (Throwable failure) {
+                gpuTimerSupported = false;
+                LOGGER.warn("[SR-METRICS] Could not close timer query; disabling GPU timing: {}", failure.getMessage());
+            }
+        }
         Arrays.fill(queryActive, false);
         Arrays.fill(pendingCpuSubmitMs, 0.0);
         currentQueryIndex = 0;
         isInsideQuery = false;
+        submittedQueryIndex = -1;
+    }
+
+    /** Requested options and the effective route independently delimit A/B windows. */
+    public synchronized boolean checkSgsrTransition(int requestedOptions, int effectiveOptions) {
+        if (requestedOptions == lastSgsrRequestedOptions && effectiveOptions == lastSgsrEffectiveOptions) {
+            return false;
+        }
+        resetForTransition("SGSR1 requested options or effective input route changed");
+        LOGGER.info("[SR-METRICS] SGSR1 options requested={} -> {} effective={} -> {}",
+                lastSgsrRequestedOptions, requestedOptions, lastSgsrEffectiveOptions, effectiveOptions);
+        lastSgsrRequestedOptions = requestedOptions;
+        lastSgsrEffectiveOptions = effectiveOptions;
+        return true;
+    }
+
+    /** Start outside the GL state guard so its capture and restore are CPU costs. */
+    public synchronized void beginCpuSubmit() {
+        if (cpuSubmissionActive) endCpuSubmit(false);
+        cpuSubmissionActive = metricsEnabled;
+        cpuSubmissionDiscarded = false;
+        submittedQueryIndex = -1;
+        if (cpuSubmissionActive) cpuStartTimeNano = System.nanoTime();
     }
 
     /**
@@ -156,21 +197,21 @@ public final class UpscaleGpuMetrics {
     private void logMetricsSummary() {
         LOGGER.info(
                 String.format(Locale.ROOT,
-                        "[SR-METRICS-SUMMARY] algorithm=%s scale=%.2f internal=%dx%d output=%dx%d samples=%d gpuAvgMs=%.3f gpuP50Ms=%.3f gpuP95Ms=%.3f gpuMinMs=%.3f gpuMaxMs=%.3f cpuSubmitAvgMs=%.3f",
+                        "[SR-METRICS-SUMMARY] algorithm=%s scale=%.2f internal=%dx%d output=%dx%d samples=%d gpuAvgMs=%.3f gpuP50Ms=%.3f gpuP95Ms=%.3f gpuMinMs=%.3f gpuMaxMs=%.3f cpuSubmitAvgMs=%.3f sgsrRequested=%d sgsrEffective=%d",
                         lastAlgorithm, (1.0 / (lastScale <= 0 ? 1.0 : lastScale)), lastInternalWidth, lastInternalHeight,
                         lastOutputWidth, lastOutputHeight,
                         aggregator.getValidSamples(), aggregator.getAverageGpuMs(), aggregator.getP50GpuMs(),
                         aggregator.getP95GpuMs(), aggregator.getMinGpuMs(), aggregator.getMaxGpuMs(),
-                        aggregator.getCpuSubmitAvgMs()
+                        aggregator.getCpuSubmitAvgMs(), lastSgsrRequestedOptions, lastSgsrEffectiveOptions
                 )
         );
     }
 
     /**
-     * Begins GPU timer query and CPU timestamp for the upscale/composite region.
+     * Begins only the GPU query for the upscale/composite region, inside the state guard.
      */
     public synchronized void beginUpscale() {
-        if (!metricsEnabled) return;
+        if (!cpuSubmissionActive) return;
         if (!initialized) {
             initializeGl();
         }
@@ -183,8 +224,6 @@ public final class UpscaleGpuMetrics {
         int outputW = RenderHandlerManager.getScreenWidth();
         int outputH = RenderHandlerManager.getScreenHeight();
         checkConfigTransition(algo, enabled, scale, internalW, internalH, outputW, outputH);
-
-        cpuStartTimeNano = System.nanoTime();
 
         if (gpuTimerSupported) {
             try {
@@ -214,32 +253,46 @@ public final class UpscaleGpuMetrics {
     }
 
     /**
-     * Ends GPU timer query, records CPU submit duration, and polls older asynchronous query results without blocking.
+     * End the GPU interval before GL state restoration. CPU completion happens later.
      */
     public synchronized void endUpscale() {
-        if (!metricsEnabled) return;
-
-        double cpuSubmitMs = (System.nanoTime() - cpuStartTimeNano) / 1_000_000.0;
+        if (!cpuSubmissionActive) return;
 
         if (gpuTimerSupported && isInsideQuery) {
             try {
                 GL15.glEndQuery(GL33.GL_TIME_ELAPSED);
-            } catch (Throwable ignored) {}
+                submittedQueryIndex = currentQueryIndex;
+                currentQueryIndex = (currentQueryIndex + 1) % QUERY_RING_SIZE;
+            } catch (Throwable ignored) {
+                // Best-effort close while the query is still tracked, then discard this frame.
+                discardPendingQueries();
+            }
             isInsideQuery = false;
+        }
+    }
 
-            // Associate CPU submit time with the current query slot
-            pendingCpuSubmitMs[currentQueryIndex] = cpuSubmitMs;
-
-            // Advance query ring index
-            currentQueryIndex = (currentQueryIndex + 1) % QUERY_RING_SIZE;
-
-            // Poll older completed queries (non-blocking)
-            pollCompletedQueries();
-        } else if (!gpuTimerSupported) {
-            // If GPU timer unsupported on driver, record CPU submit sample
+    /** Complete after the state guard closes; never associate partial CPU work with a GPU query. */
+    public synchronized void endCpuSubmit(boolean completed) {
+        if (!cpuSubmissionActive) return;
+        completed &= !cpuSubmissionDiscarded;
+        double cpuSubmitMs = (System.nanoTime() - cpuStartTimeNano) / 1_000_000.0;
+        if (isInsideQuery) {
+            endUpscale();
+            completed = false; // Missing GPU end means the frame did not complete normally.
+        }
+        if (submittedQueryIndex >= 0) {
+            if (completed) {
+                pendingCpuSubmitMs[submittedQueryIndex] = cpuSubmitMs;
+            } else {
+                queryActive[submittedQueryIndex] = false;
+                pendingCpuSubmitMs[submittedQueryIndex] = 0.0;
+            }
+        } else if (completed && !gpuTimerSupported) {
             aggregator.recordCpuOnlySample(cpuSubmitMs);
         }
-        // NOTE: If gpuTimerSupported is true but query was skipped (slot pending), do NOT record a sample.
+        submittedQueryIndex = -1;
+        cpuSubmissionActive = false;
+        if (gpuTimerSupported) pollCompletedQueries();
     }
 
     private void pollCompletedQueries() {
@@ -288,11 +341,11 @@ public final class UpscaleGpuMetrics {
 
     public synchronized String getF3Line() {
         if (!metricsEnabled) return null;
+        if (!gpuTimerSupported) {
+            return String.format(Locale.ROOT, "SR CPU submit: %.2f ms (GPU timer unsupported)", aggregator.getLatestCpuSubmitMs());
+        }
         if (aggregator.isWarmingUp()) {
             return "SR GPU: warming up (" + aggregator.getWarmupRemaining() + ")";
-        }
-        if (!gpuTimerSupported) {
-            return String.format(Locale.ROOT, "SR CPU submit: %.2f ms (GPU timer unsupported)", aggregator.getCpuSubmitAvgMs());
         }
         if (aggregator.getValidSamples() == 0) {
             return "SR GPU: collecting samples...";
@@ -308,13 +361,13 @@ public final class UpscaleGpuMetrics {
         int outputW = RenderHandlerManager.getScreenWidth();
         int outputH = RenderHandlerManager.getScreenHeight();
 
-        if (aggregator.isWarmingUp()) {
+        if (gpuTimerSupported && aggregator.isWarmingUp()) {
             LOGGER.info("[SR-METRICS] algorithm={} state=warming_up remaining={}", algo, aggregator.getWarmupRemaining());
             return;
         }
         if (!gpuTimerSupported) {
             LOGGER.info(
-                    String.format(Locale.ROOT, "[SR-METRICS] algorithm=%s gpuMs=unsupported cpuSubmitAvgMs=%.3f", algo, aggregator.getCpuSubmitAvgMs())
+                    String.format(Locale.ROOT, "[SR-METRICS] algorithm=%s gpuMs=unsupported cpuSubmitMs=%.3f", algo, aggregator.getLatestCpuSubmitMs())
             );
             return;
         }

@@ -259,9 +259,18 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
                 && !(SuperResolutionConfig.getCaptureMode() == CaptureMode.C
                 && !Platform.currentPlatform.iris().isShaderPackInUse());
         var config = SuperResolutionConfig.SPECIAL.SGSR1;
+        boolean reducedState = config.REDUCED_GL_STATE.get();
+        boolean skipAuxiliary = config.SKIP_AUXILIARY_INPUTS.get();
+        boolean directColor = config.DIRECT_COLOR_INPUT.get();
         var plan = Sgsr1OptimizationPolicy.select(builtInSgsr1, externalConsumers, auxiliaryConsumer,
-                boundedOperations, config.REDUCED_GL_STATE.get(), config.SKIP_AUXILIARY_INPUTS.get(),
-                config.DIRECT_COLOR_INPUT.get(), compatibleColor);
+                boundedOperations, reducedState, skipAuxiliary, directColor, compatibleColor);
+        // Bits: reduced state=1, skipped auxiliaries=2, direct color=4; -1 means inactive.
+        int requestedOptions = builtInSgsr1
+                ? (reducedState ? 1 : 0) | (skipAuxiliary ? 2 : 0) | (directColor ? 4 : 0) : -1;
+        int effectiveOptions = builtInSgsr1
+                ? (plan.reducedState() ? 1 : 0) | (!plan.auxiliaryInputs() ? 2 : 0) | (plan.directColor() ? 4 : 0) : -1;
+        io.homo.superresolution.common.metrics.UpscaleGpuMetrics.getInstance()
+                .checkSgsrTransition(requestedOptions, effectiveOptions);
         if (builtInSgsr1 && !plan.equals(lastInputPlan)) {
             LOGGER.info("[SGSR1-INPUTS] reducedState={} auxiliaryInputs={} directColor={} externalConsumers={} auxiliaryConsumer={}",
                     plan.reducedState(), plan.auxiliaryInputs(), plan.directColor(), externalConsumers, auxiliaryConsumer);
@@ -313,12 +322,16 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
         ITexture sourceColor = renderTarget.getTexture(FrameBufferAttachmentType.Color);
         Sgsr1OptimizationPolicy.Plan inputPlan = selectInputPlan(sourceColor);
         boolean copiesInputs = !inputPlan.directColor() || inputPlan.auxiliaryInputs();
+        var metrics = io.homo.superresolution.common.metrics.UpscaleGpuMetrics.getInstance();
+        boolean upscaleEnabled = SuperResolutionConfig.isEnableUpscale();
+        boolean completed = false;
+        if (upscaleEnabled) metrics.beginCpuSubmit();
         try (GlState ignored = inputPlan.reducedState()
                 ? new GlState(Sgsr1OptimizationPolicy.stateMask(copiesInputs), 2) : new GlState()) {
             // Currently a no-op; retain its original placement under the state guard.
             AlgorithmManager.update();
-            if (SuperResolutionConfig.isEnableUpscale()) {
-                io.homo.superresolution.common.metrics.UpscaleGpuMetrics.getInstance().beginUpscale();
+            if (upscaleEnabled) {
+                metrics.beginUpscale();
                 try {
                     {
                         GlDebug.pushGroup(0x7190001, "Copy Resources");
@@ -410,9 +423,15 @@ public class MinecraftRenderHandler implements IMinecraftRenderHandler {
                         GlDebug.popGroup();
                     }
                 } finally {
-                    io.homo.superresolution.common.metrics.UpscaleGpuMetrics.getInstance().endUpscale();
+                    metrics.endUpscale();
                 }
             }
+            completed = true;
+        } catch (RuntimeException | Error failure) {
+            completed = false; // Includes a failed GlState capture or restoration.
+            throw failure;
+        } finally {
+            if (upscaleEnabled) metrics.endCpuSubmit(completed);
         }
 
         {
